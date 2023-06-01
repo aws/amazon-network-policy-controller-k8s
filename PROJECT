@@ -7,4 +7,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: amazon-network-policy-controller-k8s
 repo: github.com/aws/amazon-network-policy-controller-k8s
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: k8s.aws
+  group: networking
+  kind: PolicyEndpoint
+  path: github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1
+  version: v1alpha1
 version: "3"

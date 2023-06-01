@@ -1,0 +1,12 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: PolicyEndpoint
+metadata:
+  labels:
+    app.kubernetes.io/name: policyendpoint
+    app.kubernetes.io/instance: policyendpoint-sample
+    app.kubernetes.io/part-of: amazon-network-policy-controller-k8s
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: amazon-network-policy-controller-k8s
+  name: policyendpoint-sample
+spec:
+  # TODO(user): Add fields here
