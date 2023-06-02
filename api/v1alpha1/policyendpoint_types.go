@@ -25,7 +25,7 @@ type PolicyReference struct {
 	// Name is the name of the Policy
 	Name string `json:"name"`
 
-	// Port is the port of the ServicePort.
+	// Namespace is the namespace of the Policy
 	Namespace string `json:"namespace"`
 }
 

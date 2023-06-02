@@ -218,7 +218,7 @@ spec:
                     description: Name is the name of the Policy
                     type: string
                   namespace:
-                    description: Port is the port of the ServicePort.
+                    description: Namespace is the namespace of the Policy
                     type: string
                 required:
                 - name
