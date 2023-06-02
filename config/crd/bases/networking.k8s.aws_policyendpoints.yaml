@@ -225,7 +225,6 @@ spec:
                 - namespace
                 type: object
             required:
-            - podSelector
             - policyRef
             type: object
           status:

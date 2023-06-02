@@ -85,7 +85,7 @@ type PodEndpoint struct {
 // PolicyEndpointSpec defines the desired state of PolicyEndpoint
 type PolicyEndpointSpec struct {
 	// PodSelector is the podSelector from the policy resource
-	PodSelector *metav1.LabelSelector `json:"podSelector"`
+	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// PolicyRef is a reference to the Kubernetes NetworkPolicy resource.
 	PolicyRef PolicyReference `json:"policyRef"`
