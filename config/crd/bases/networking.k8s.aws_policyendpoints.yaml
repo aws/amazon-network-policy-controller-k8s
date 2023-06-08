@@ -69,12 +69,9 @@ spec:
                             format: int32
                             type: integer
                           protocol:
+                            default: TCP
                             description: Protocol specifies the transport protocol,
                               default TCP
-                            enum:
-                            - TCP
-                            - UDP
-                            - SCTP
                             type: string
                         type: object
                       type: array
@@ -116,12 +113,9 @@ spec:
                             format: int32
                             type: integer
                           protocol:
+                            default: TCP
                             description: Protocol specifies the transport protocol,
                               default TCP
-                            enum:
-                            - TCP
-                            - UDP
-                            - SCTP
                             type: string
                         type: object
                       type: array
@@ -134,8 +128,10 @@ spec:
                   for a particular traffic direction Ingress or Egress, or both. If
                   default isolation is not specified, and there are no ingress/egress
                   rules, then the pod is not isolated from the point of view of this
-                  policy.
+                  policy. This follows the NetworkPolicy spec.PolicyTypes.
                 items:
+                  description: PolicyType string describes the NetworkPolicy type
+                    This type is beta-level in 1.8
                   type: string
                 type: array
               podSelector:

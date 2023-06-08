@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
+	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -29,26 +31,12 @@ type PolicyReference struct {
 	Namespace string `json:"namespace"`
 }
 
-// +kubebuilder:validation:Enum=TCP;UDP;SCTP
-type Protocol string
-
 type NetworkAddress string
-
-// +kubebuilder: validation: Enum=Ingress;Egress
-type TrafficDirection string
-
-const (
-	ProtocolTCP             Protocol         = "TCP"
-	ProtocolUDP             Protocol         = "UDP"
-	ProtocolSCTP            Protocol         = "SCTP"
-	TrafficDirectionIngress TrafficDirection = "Ingress"
-	TrafficDirectionEgress  TrafficDirection = "Egress"
-)
 
 // Port contains information about the transport port/protocol
 type Port struct {
 	// Protocol specifies the transport protocol, default TCP
-	Protocol *Protocol `json:"protocol,omitempty"`
+	Protocol *corev1.Protocol `json:"protocol,omitempty"`
 
 	// Port specifies the numerical port for the protocol. If empty applies to all ports
 	Port *int32 `json:"port,omitempty"`
@@ -93,8 +81,8 @@ type PolicyEndpointSpec struct {
 	// PodIsolation specifies whether the pod needs to be isolated for a
 	// particular traffic direction Ingress or Egress, or both. If default isolation is not
 	// specified, and there are no ingress/egress rules, then the pod is not isolated
-	// from the point of view of this policy.
-	PodIsolation []TrafficDirection `json:"podIsolation,omitempty"`
+	// from the point of view of this policy. This follows the NetworkPolicy spec.PolicyTypes.
+	PodIsolation []networking.PolicyType `json:"podIsolation,omitempty"`
 
 	// PodSelectorEndpoints contains information about the pods
 	// matching the podSelector
