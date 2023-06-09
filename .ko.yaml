@@ -1,0 +1,12 @@
+builds:
+- env:
+  - CGO_ENABLED=0
+  flags:
+  - -mod=readonly
+  ldflags:
+  - -s
+  - -w
+  - -X github.com/aws/amazon-network-policy-controller-k8s/pkg/version.GitVersion={{.Env.GIT_VERSION}}
+  - -X github.com/aws/amazon-network-policy-controller-k8s/pkg/version.GitCommit={{.Env.GIT_COMMIT}}
+  - -X github.com/aws/amazon-network-policy-controller-k8s/pkg/version.BuildDate={{.Env.BUILD_DATE}}
+
