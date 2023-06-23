@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
+	"github.com/samber/lo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -73,10 +74,5 @@ func (m *defaultFinalizerManager) RemoveFinalizers(ctx context.Context, obj clie
 // HasFinalizer tests whether k8s object has specified finalizer
 func HasFinalizer(obj metav1.Object, finalizer string) bool {
 	f := obj.GetFinalizers()
-	for _, e := range f {
-		if e == finalizer {
-			return true
-		}
-	}
-	return false
+	return lo.Contains(f, finalizer)
 }

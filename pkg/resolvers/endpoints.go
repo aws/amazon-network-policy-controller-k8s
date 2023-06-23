@@ -1,4 +1,4 @@
-package policyendpoints
+package resolvers
 
 import (
 	"context"

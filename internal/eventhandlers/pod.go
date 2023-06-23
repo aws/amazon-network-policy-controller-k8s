@@ -18,9 +18,9 @@ package eventhandlers
 
 import (
 	"context"
-
-	"github.com/aws/amazon-network-policy-controller-k8s/pkg/backend"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
+
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -32,12 +32,12 @@ import (
 
 // NewEnqueueRequestForPodEvent constructs new enqueueRequestsForPodEvent
 func NewEnqueueRequestForPodEvent(policyEventChan chan<- event.GenericEvent, k8sClient client.Client,
-	podResolver backend.PodResolver, logger logr.Logger) handler.EventHandler {
+	policyResolver resolvers.PolicyReferenceResolver, logger logr.Logger) handler.EventHandler {
 	return &enqueueRequestForPodEvent{
 		k8sClient:       k8sClient,
+		policyResolver:  policyResolver,
 		policyEventChan: policyEventChan,
 		logger:          logger,
-		podResolver:     podResolver,
 	}
 }
 
@@ -45,50 +45,50 @@ var _ handler.EventHandler = (*enqueueRequestForPodEvent)(nil)
 
 type enqueueRequestForPodEvent struct {
 	k8sClient       client.Client
+	policyResolver  resolvers.PolicyReferenceResolver
 	policyEventChan chan<- event.GenericEvent
 	logger          logr.Logger
-	podResolver     backend.PodResolver
 }
 
-func (h *enqueueRequestForPodEvent) Create(event event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.RateLimitingInterface) {
 	podNew := event.Object.(*corev1.Pod)
-	h.logger.V(1).Info("handling pod create event", "pod", k8s.NamespacedName(podNew))
-	h.enqueueReferredPolicies(q, podNew, nil)
+	h.logger.V(1).Info("Handling pod create event", "pod", k8s.NamespacedName(podNew))
+	h.enqueueReferredPolicies(ctx, q, podNew, nil)
 }
 
-func (h *enqueueRequestForPodEvent) Update(e event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Update(ctx context.Context, e event.UpdateEvent, q workqueue.RateLimitingInterface) {
 	podOld := e.ObjectOld.(*corev1.Pod)
 	podNew := e.ObjectNew.(*corev1.Pod)
 
-	h.logger.V(1).Info("handling pod update event", "pod", k8s.NamespacedName(podNew))
+	h.logger.V(1).Info("Handling pod update event", "pod", k8s.NamespacedName(podNew))
 	if equality.Semantic.DeepEqual(podOld.Annotations, podNew.Annotations) &&
 		equality.Semantic.DeepEqual(podOld.Labels, podNew.Labels) &&
 		equality.Semantic.DeepEqual(podOld.DeletionTimestamp.IsZero(), podNew.DeletionTimestamp.IsZero()) &&
 		equality.Semantic.DeepEqual(podOld.Status.PodIP, podNew.Status.PodIP) {
 		return
 	}
-	h.enqueueReferredPolicies(q, podNew, podOld)
+	h.enqueueReferredPolicies(ctx, q, podNew, podOld)
 }
 
-func (h *enqueueRequestForPodEvent) Delete(e event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Delete(ctx context.Context, e event.DeleteEvent, q workqueue.RateLimitingInterface) {
 	pod := e.Object.(*corev1.Pod)
-	h.logger.V(1).Info("handling delete event", "pod", k8s.NamespacedName(pod))
-	h.enqueueReferredPolicies(q, pod, nil)
+	h.logger.V(1).Info("Handling delete event", "pod", k8s.NamespacedName(pod))
+	h.enqueueReferredPolicies(ctx, q, pod, nil)
 }
 
-func (h *enqueueRequestForPodEvent) Generic(_ event.GenericEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.RateLimitingInterface) {
 	return
 }
 
-func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(_ workqueue.RateLimitingInterface, pod *corev1.Pod, podOld *corev1.Pod) {
-	referredPolicies, err := h.podResolver.GetReferredPolicies(context.Background(), pod, podOld)
+func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, pod *corev1.Pod, podOld *corev1.Pod) {
+	referredPolicies, err := h.policyResolver.GetReferredPoliciesForPod(ctx, pod, podOld)
 	if err != nil {
-		h.logger.Error(err, "unable to get referred policies", "pod", k8s.NamespacedName(pod))
+		h.logger.Error(err, "Unable to get referred policies", "pod", k8s.NamespacedName(pod))
 		return
 	}
 	for i := range referredPolicies {
 		policy := &referredPolicies[i]
-		h.logger.Info("enqueue from pod reference", "policy", k8s.NamespacedName(policy), "pod", k8s.NamespacedName(pod))
+		h.logger.Info("Enqueue from pod reference", "policy", k8s.NamespacedName(policy), "pod", k8s.NamespacedName(pod))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
 		}

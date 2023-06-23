@@ -3,6 +3,7 @@ package policyendpoints
 import (
 	"context"
 	"errors"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 
 	"github.com/go-logr/logr"
 	networking "k8s.io/api/networking/v1"
@@ -16,7 +17,7 @@ type PolicyEndpointsManager interface {
 
 // NewPolicyEndpointsManager constructs a new policyEndpointsManager
 func NewPolicyEndpointsManager(k8sClient client.Client, endpointChunkSize int, logger logr.Logger) *policyEndpointsManager {
-	endpointsResolver := NewEndpointsResolver(k8sClient, logger.WithName("endpoints-resolver"))
+	endpointsResolver := resolvers.NewEndpointsResolver(k8sClient, logger.WithName("endpoints-resolver"))
 	return &policyEndpointsManager{
 		k8sClient:         k8sClient,
 		endpointsResolver: endpointsResolver,
@@ -29,7 +30,7 @@ var _ PolicyEndpointsManager = (*policyEndpointsManager)(nil)
 
 type policyEndpointsManager struct {
 	k8sClient         client.Client
-	endpointsResolver *defaultEndpointsResolver
+	endpointsResolver resolvers.EndpointsResolver
 	endpointChunkSize int
 	logger            logr.Logger
 }

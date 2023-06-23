@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,7 +14,7 @@ import (
 func TestNamespacedName(t *testing.T) {
 	tests := []struct {
 		name string
-		obj  metav1.Object
+		obj  client.Object
 		want types.NamespacedName
 	}{
 		{

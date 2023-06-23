@@ -18,12 +18,12 @@ package controllers
 
 import (
 	"context"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -46,14 +46,10 @@ const (
 func NewPolicyReconciler(k8sClient client.Client, policyEndpointsManager policyendpoints.PolicyEndpointsManager,
 	controllerConfig config.ControllerConfig, finalizerManager k8s.FinalizerManager, logger logr.Logger) *policyReconciler {
 	policyTracker := backend.NewPolicyTracker(logger.WithName("policy-tracker"))
-	podUtils := backend.NewPodResolver(k8sClient, policyTracker, logger.WithName("pod-utils"))
-	svcUtils := backend.NewServiceResolver(k8sClient, policyTracker, logger.WithName("service-utils"))
-	nsUtils := backend.NewNamespaceResolver(k8sClient, policyTracker, logger.WithName("namespace-utils"))
+	policyResolver := resolvers.NewPolicyReferenceResolver(k8sClient, policyTracker, logger.WithName("policy-resolver"))
 	return &policyReconciler{
 		k8sClient:                    k8sClient,
-		podUtils:                     podUtils,
-		serviceUtils:                 svcUtils,
-		nsUtils:                      nsUtils,
+		policyResolver:               policyResolver,
 		policyTracker:                policyTracker,
 		policyEndpointsManager:       policyEndpointsManager,
 		podUpdateBatchPeriodDuration: controllerConfig.PodUpdateBatchPeriodDuration,
@@ -67,9 +63,7 @@ var _ reconcile.Reconciler = (*policyReconciler)(nil)
 
 type policyReconciler struct {
 	k8sClient                    client.Client
-	podUtils                     backend.PodResolver
-	serviceUtils                 backend.ServiceResolver
-	nsUtils                      backend.NamespaceResolver
+	policyResolver               resolvers.PolicyReferenceResolver
 	policyTracker                backend.PolicyTracker
 	policyEndpointsManager       policyendpoints.PolicyEndpointsManager
 	podUpdateBatchPeriodDuration time.Duration
@@ -88,71 +82,43 @@ type policyReconciler struct {
 //+kubebuilder:rbac:groups="networking.k8s.io",resources=networkpolicies,verbs=get;list;watch;update;patch
 
 func (r *policyReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
-	r.logger.Info("Got reconcile request", "req", request)
-	policy := &networking.NetworkPolicy{}
-	if err := r.k8sClient.Get(ctx, request.NamespacedName, policy); err != nil {
-		r.logger.Info("unable to get policy", "resource", policy, "err", err)
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-	if policy.DeletionTimestamp.IsZero() {
-		if err := r.reconcilePolicy(ctx, policy); err != nil {
-			if apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
-				return ctrl.Result{}, nil
-			}
-			r.logger.Error(err, "Error during policy reconcile, re-queueing")
-			return ctrl.Result{Requeue: true}, nil
-		}
-	} else {
-		if err := r.cleanupPolicy(ctx, policy); err != nil {
-			r.logger.Error(err, "Error during policy cleanup, re-queueing")
-			return ctrl.Result{Requeue: true}, nil
-		}
-	}
-
-	return ctrl.Result{}, nil
+	r.logger.Info("Got reconcile request", "resource", request)
+	return ctrl.Result{}, r.reconcile(ctx, request)
 }
 
-func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	c, err := controller.New(controllerName, mgr, controller.Options{
-		MaxConcurrentReconciles: r.maxConcurrentReconciles,
-		Reconciler:              r,
-	})
-	if err != nil {
-		return err
-	}
-	if err := r.setupWatches(ctx, c); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *policyReconciler) setupWatches(_ context.Context, c controller.Controller) error {
+func (r *policyReconciler) SetupWithManager(_ context.Context, mgr ctrl.Manager) error {
 	policyEventChan := make(chan event.GenericEvent)
 	policyEventHandler := eventhandlers.NewEnqueueRequestForPolicyEvent(r.policyTracker, r.podUpdateBatchPeriodDuration,
 		r.logger.WithName("eventHandler").WithName("policy"))
-	podEventHandler := eventhandlers.NewEnqueueRequestForPodEvent(policyEventChan, r.k8sClient, r.podUtils,
+	podEventHandler := eventhandlers.NewEnqueueRequestForPodEvent(policyEventChan, r.k8sClient, r.policyResolver,
 		r.logger.WithName("eventHandler").WithName("pod"))
-	nsEventHandler := eventhandlers.NewEnqueueRequestForNamespaceEvent(policyEventChan, r.k8sClient, r.nsUtils,
+	nsEventHandler := eventhandlers.NewEnqueueRequestForNamespaceEvent(policyEventChan, r.k8sClient, r.policyResolver,
 		r.logger.WithName("eventHandler").WithName("namespace"))
-	svcEventHandler := eventhandlers.NewEnqueueRequestForServiceEvent(policyEventChan, r.k8sClient, r.serviceUtils,
+	svcEventHandler := eventhandlers.NewEnqueueRequestForServiceEvent(policyEventChan, r.k8sClient, r.policyResolver,
 		r.logger.WithName("eventHandler").WithName("service"))
 
-	if err := c.Watch(&source.Channel{Source: policyEventChan}, policyEventHandler); err != nil {
-		return err
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(controllerName).
+		Watches(&networking.NetworkPolicy{}, policyEventHandler).
+		Watches(&corev1.Pod{}, podEventHandler).
+		Watches(&corev1.Namespace{}, nsEventHandler).
+		Watches(&corev1.Service{}, svcEventHandler).
+		WatchesRawSource(&source.Channel{Source: policyEventChan}, policyEventHandler).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.maxConcurrentReconciles,
+		}).Complete(r)
+}
+
+func (r *policyReconciler) reconcile(ctx context.Context, request reconcile.Request) error {
+	policy := &networking.NetworkPolicy{}
+	if err := r.k8sClient.Get(ctx, request.NamespacedName, policy); err != nil {
+		r.logger.V(1).Info("Unable to get policy", "resource", policy, "err", err)
+		return client.IgnoreNotFound(err)
 	}
-	if err := c.Watch(&source.Kind{Type: &networking.NetworkPolicy{}}, policyEventHandler); err != nil {
-		return err
+	if !policy.DeletionTimestamp.IsZero() {
+		return r.cleanupPolicy(ctx, policy)
 	}
-	if err := c.Watch(&source.Kind{Type: &corev1.Pod{}}, podEventHandler); err != nil {
-		return err
-	}
-	if err := c.Watch(&source.Kind{Type: &corev1.Namespace{}}, nsEventHandler); err != nil {
-		return err
-	}
-	if err := c.Watch(&source.Kind{Type: &corev1.Service{}}, svcEventHandler); err != nil {
-		return err
-	}
-	return nil
+	return r.reconcilePolicy(ctx, policy)
 }
 
 func (r *policyReconciler) reconcilePolicy(ctx context.Context, policy *networking.NetworkPolicy) error {
@@ -164,6 +130,7 @@ func (r *policyReconciler) reconcilePolicy(ctx context.Context, policy *networki
 
 func (r *policyReconciler) cleanupPolicy(ctx context.Context, policy *networking.NetworkPolicy) error {
 	if k8s.HasFinalizer(policy, policyFinalizerName) {
+		r.policyTracker.RemovePolicy(policy)
 		if err := r.policyEndpointsManager.Cleanup(ctx, policy); err != nil {
 			return err
 		}

@@ -1,14 +1,10 @@
 package k8s
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // NamespacedName returns the namespaced name for k8s objects
-func NamespacedName(obj metav1.Object) types.NamespacedName {
-	return types.NamespacedName{
-		Namespace: obj.GetNamespace(),
-		Name:      obj.GetName(),
-	}
+func NamespacedName(obj client.Object) client.ObjectKey {
+	return client.ObjectKeyFromObject(obj)
 }

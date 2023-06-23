@@ -17,6 +17,7 @@ limitations under the License.
 package eventhandlers
 
 import (
+	"context"
 	"time"
 
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/backend"
@@ -49,34 +50,33 @@ type enqueueRequestForPolicyEvent struct {
 	logger                       logr.Logger
 }
 
-func (h *enqueueRequestForPolicyEvent) Create(e event.CreateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Create(_ context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
 	policy := e.Object.(*networking.NetworkPolicy)
-	h.logger.V(1).Info("handling create event", "policy", k8s.NamespacedName(policy))
+	h.logger.V(1).Info("Handling create event", "policy", k8s.NamespacedName(policy))
 	h.enqueuePolicy(queue, policy, 0)
 }
 
-func (h *enqueueRequestForPolicyEvent) Update(e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
 	oldPolicy := e.ObjectOld.(*networking.NetworkPolicy)
 	newPolicy := e.ObjectNew.(*networking.NetworkPolicy)
 
-	h.logger.V(1).Info("handling update event", "policy", k8s.NamespacedName(newPolicy))
-	if equality.Semantic.DeepEqual(oldPolicy.Annotations, newPolicy.Annotations) &&
-		equality.Semantic.DeepEqual(oldPolicy.Spec, newPolicy.Spec) &&
+	h.logger.V(1).Info("Handling update event", "policy", k8s.NamespacedName(newPolicy))
+	if equality.Semantic.DeepEqual(oldPolicy.Spec, newPolicy.Spec) &&
 		equality.Semantic.DeepEqual(oldPolicy.DeletionTimestamp.IsZero(), newPolicy.DeletionTimestamp.IsZero()) {
 		return
 	}
 	h.enqueuePolicy(queue, newPolicy, 0)
 }
 
-func (h *enqueueRequestForPolicyEvent) Delete(e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Delete(_ context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
 	policy := e.Object.(*networking.NetworkPolicy)
-	h.logger.V(1).Info("handling delete event", "policy", k8s.NamespacedName(policy))
+	h.logger.V(1).Info("Handling delete event", "policy", k8s.NamespacedName(policy))
 	h.policyTracker.RemovePolicy(policy)
 }
 
-func (h *enqueueRequestForPolicyEvent) Generic(e event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Generic(_ context.Context, e event.GenericEvent, q workqueue.RateLimitingInterface) {
 	policy := e.Object.(*networking.NetworkPolicy)
-	h.logger.V(1).Info("handling generic event", "policy", k8s.NamespacedName(policy))
+	h.logger.V(1).Info("Handling generic event", "policy", k8s.NamespacedName(policy))
 	h.enqueuePolicy(q, policy, h.podUpdateBatchPeriodDuration)
 }
 
