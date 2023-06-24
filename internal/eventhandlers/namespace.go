@@ -45,7 +45,8 @@ func (h *enqueueRequestForNamespaceEvent) Update(ctx context.Context, event even
 	nsOld := event.ObjectOld.(*corev1.Namespace)
 
 	h.logger.V(1).Info("Handling update event", "namespace", k8s.NamespacedName(nsNew))
-	if equality.Semantic.DeepEqual(nsOld.Labels, nsNew.Labels) {
+	if equality.Semantic.DeepEqual(nsOld.Labels, nsNew.Labels) &&
+		equality.Semantic.DeepEqual(nsOld.DeletionTimestamp.IsZero(), nsNew.DeletionTimestamp.IsZero()) {
 		return
 	}
 	h.enqueueReferredPolicies(ctx, q, nsNew, nsOld)
