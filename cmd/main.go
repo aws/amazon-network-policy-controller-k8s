@@ -17,8 +17,11 @@ limitations under the License.
 package main
 
 import (
-	"flag"
 	"os"
+
+	"github.com/go-logr/logr"
+	"github.com/spf13/pflag"
+	"go.uber.org/zap/zapcore"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -31,8 +34,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	networkingv1alpha1 "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
-	"github.com/aws/amazon-network-policy-controller-k8s/internal/controller"
+	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
+	"github.com/aws/amazon-network-policy-controller-k8s/internal/controllers"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/config"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
+	"github.com/aws/amazon-network-policy-controller-k8s/version"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -44,58 +51,52 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(networkingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(policyinfo.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
 func main() {
-	var metricsAddr string
-	var enableLeaderElection bool
-	var probeAddr string
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		MetricsBindAddress:     metricsAddr,
-		Port:                   9443,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "9d29aaa6.k8s.aws",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
-	})
+	infoLogger := getLoggerWithLogLevel("info")
+	infoLogger.Info("version",
+		"GitVersion", version.GitVersion,
+		"GitCommit", version.GitCommit,
+		"BuildDate", version.BuildDate,
+	)
+	controllerCFG, err := loadControllerConfig()
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
+		infoLogger.Error(err, "unable to load controller config")
 		os.Exit(1)
+	}
+	ctrlLogger := getLoggerWithLogLevel(controllerCFG.LogLevel)
+	ctrl.SetLogger(ctrlLogger)
+
+	restCFG, err := config.BuildRestConfig(controllerCFG.RuntimeConfig)
+	if err != nil {
+		setupLog.Error(err, "unable to build REST config")
+		os.Exit(1)
+	}
+	rtOpts := config.BuildRuntimeOptions(controllerCFG.RuntimeConfig, scheme)
+
+	mgr, err := ctrl.NewManager(restCFG, rtOpts)
+	if err != nil {
+		setupLog.Error(err, "unable to create controller manager")
+		os.Exit(1)
+	}
+	ctx := ctrl.SetupSignalHandler()
+	enablePolicyController := true
+	policyEndpointsManager := policyendpoints.NewPolicyEndpointsManager(mgr.GetClient(),
+		controllerCFG.EndpointChunkSize, ctrl.Log.WithName("endpoints-manager"))
+	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
+	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
+		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("policy"))
+	if enablePolicyController {
+		setupLog.Info("Network Policy controller is enabled, starting watches")
+		if err := policyController.SetupWithManager(ctx, mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "policy")
+			os.Exit(1)
+		}
 	}
 
-	if err = (&controller.PolicyEndpointReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PolicyEndpoint")
-		os.Exit(1)
-	}
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -106,10 +107,41 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
-
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	setupLog.Info("starting controller manager")
+	if err := mgr.Start(ctx); err != nil {
+		setupLog.Error(err, "problem running controller manager")
 		os.Exit(1)
 	}
+	setupLog.Info("controller manager stopped")
+
+}
+
+// loadControllerConfig loads the controller configuration
+func loadControllerConfig() (config.ControllerConfig, error) {
+	controllerConfig := config.ControllerConfig{}
+	fs := pflag.NewFlagSet("", pflag.ExitOnError)
+	controllerConfig.BindFlags(fs)
+
+	if err := fs.Parse(os.Args); err != nil {
+		return controllerConfig, err
+	}
+
+	return controllerConfig, nil
+}
+
+// getLoggerWithLogLevel returns logger with specific log level.
+func getLoggerWithLogLevel(logLevel string) logr.Logger {
+	var zapLevel zapcore.Level
+	switch logLevel {
+	case "info":
+		zapLevel = zapcore.InfoLevel
+	case "debug":
+		zapLevel = zapcore.DebugLevel
+	default:
+		zapLevel = zapcore.InfoLevel
+	}
+	return zap.New(zap.UseDevMode(false),
+		zap.Level(zapLevel),
+		zap.StacktraceLevel(zapcore.FatalLevel),
+	)
 }
