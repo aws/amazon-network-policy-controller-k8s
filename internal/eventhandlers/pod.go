@@ -81,6 +81,10 @@ func (h *enqueueRequestForPodEvent) Generic(_ context.Context, _ event.GenericEv
 }
 
 func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, pod *corev1.Pod, podOld *corev1.Pod) {
+	if len(k8s.GetPodIP(pod)) == 0 {
+		h.logger.V(1).Info("Pod does not have an IP yet", "pod", k8s.NamespacedName(pod))
+		return
+	}
 	referredPolicies, err := h.policyResolver.GetReferredPoliciesForPod(ctx, pod, podOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "pod", k8s.NamespacedName(pod))
