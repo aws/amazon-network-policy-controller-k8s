@@ -99,7 +99,7 @@ func main() {
 		setupLog.Info("Enable network policy controller based on configuration", "configmap", configmap.GetControllerConfigMapId())
 		configMapManager := config.NewConfigmapManager(configmap.GetControllerConfigMapId(),
 			clientSet, cancelFn, configmap.GetConfigmapCheckFn(), ctrl.Log.WithName("configmap-manager"))
-		if err := configMapManager.MonitorConfigMap(); err != nil {
+		if err := configMapManager.MonitorConfigMap(ctx); err != nil {
 			setupLog.Error(err, "Unable to monitor configmap for checking if controller is enabled")
 			os.Exit(1)
 		}

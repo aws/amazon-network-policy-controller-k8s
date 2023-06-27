@@ -19,7 +19,7 @@ import (
 // +kubebuilder:rbac:groups="",resources=configmaps,namespace="system",resourceNames=amazon-vpc-cni,verbs=get;list;watch
 
 type ConfigmapManager interface {
-	MonitorConfigMap() error
+	MonitorConfigMap(ctx context.Context) error
 	IsControllerEnabled() bool
 }
 
@@ -28,7 +28,6 @@ var _ ConfigmapManager = (*defaultConfigmapManager)(nil)
 type defaultConfigmapManager struct {
 	initialState           bool
 	resourceRef            types.NamespacedName
-	ctx                    context.Context
 	store                  cache.Store
 	rt                     *cache.Reflector
 	clientSet              *kubernetes.Clientset
@@ -62,15 +61,15 @@ func (m *defaultConfigmapManager) IsControllerEnabled() bool {
 }
 
 // MonitorConfigMap starts cache reflector and watches for configmap updates.
-func (m *defaultConfigmapManager) MonitorConfigMap() error {
+func (m *defaultConfigmapManager) MonitorConfigMap(ctx context.Context) error {
 	fieldSelector := fields.Set{"metadata.name": m.resourceRef.Name}.AsSelector().String()
 	listFunc := func(options metav1.ListOptions) (runtime.Object, error) {
 		options.FieldSelector = fieldSelector
-		return m.clientSet.CoreV1().ConfigMaps(m.resourceRef.Namespace).List(context.TODO(), options)
+		return m.clientSet.CoreV1().ConfigMaps(m.resourceRef.Namespace).List(ctx, options)
 	}
 	watchFunc := func(options metav1.ListOptions) (watch.Interface, error) {
 		options.FieldSelector = fieldSelector
-		return m.clientSet.CoreV1().ConfigMaps(m.resourceRef.Namespace).Watch(context.TODO(), options)
+		return m.clientSet.CoreV1().ConfigMaps(m.resourceRef.Namespace).Watch(ctx, options)
 	}
 	m.rt = cache.NewReflector(&cache.ListWatch{ListFunc: listFunc, WatchFunc: watchFunc},
 		&corev1.ConfigMap{},
