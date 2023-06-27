@@ -18,9 +18,9 @@ package eventhandlers
 
 import (
 	"context"
+
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
-
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -81,6 +81,10 @@ func (h *enqueueRequestForPodEvent) Generic(_ context.Context, _ event.GenericEv
 }
 
 func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, pod *corev1.Pod, podOld *corev1.Pod) {
+	if len(k8s.GetPodIP(pod)) == 0 {
+		h.logger.V(1).Info("Pod does not have an IP yet", "pod", k8s.NamespacedName(pod))
+		return
+	}
 	referredPolicies, err := h.policyResolver.GetReferredPoliciesForPod(ctx, pod, podOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "pod", k8s.NamespacedName(pod))
