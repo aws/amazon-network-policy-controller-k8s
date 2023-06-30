@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -29,6 +30,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -39,6 +41,7 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/config"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/configmap"
 	"github.com/aws/amazon-network-policy-controller-k8s/version"
 	//+kubebuilder:scaffold:imports
 )
@@ -82,17 +85,36 @@ func main() {
 		setupLog.Error(err, "unable to create controller manager")
 		os.Exit(1)
 	}
+	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to obtain clientSet")
+		os.Exit(1)
+	}
+
 	ctx := ctrl.SetupSignalHandler()
-	enablePolicyController := true
+	enableNetworkPolicyController := true
+	if controllerCFG.EnableConfigMapCheck {
+		var cancelFn context.CancelFunc
+		ctx, cancelFn = context.WithCancel(ctx)
+		setupLog.Info("Enable network policy controller based on configuration", "configmap", configmap.GetControllerConfigMapId())
+		configMapManager := config.NewConfigmapManager(configmap.GetControllerConfigMapId(),
+			clientSet, cancelFn, configmap.GetConfigmapCheckFn(), ctrl.Log.WithName("configmap-manager"))
+		if err := configMapManager.MonitorConfigMap(ctx); err != nil {
+			setupLog.Error(err, "Unable to monitor configmap for checking if controller is enabled")
+			os.Exit(1)
+		}
+		enableNetworkPolicyController = configMapManager.IsControllerEnabled()
+	}
+
 	policyEndpointsManager := policyendpoints.NewPolicyEndpointsManager(mgr.GetClient(),
 		controllerCFG.EndpointChunkSize, ctrl.Log.WithName("endpoints-manager"))
 	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
 	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
 		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("policy"))
-	if enablePolicyController {
+	if enableNetworkPolicyController {
 		setupLog.Info("Network Policy controller is enabled, starting watches")
 		if err := policyController.SetupWithManager(ctx, mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "policy")
+			setupLog.Error(err, "Unable to setup network policy controller")
 			os.Exit(1)
 		}
 	}
