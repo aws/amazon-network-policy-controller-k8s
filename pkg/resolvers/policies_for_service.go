@@ -16,7 +16,7 @@ import (
 
 // getReferredPoliciesForService returns the list of policies that refer to the service.
 func (r *defaultPolicyReferenceResolver) getReferredPoliciesForService(ctx context.Context, svc, svcOld *corev1.Service) ([]networking.NetworkPolicy, error) {
-	if svc.Spec.ClusterIP == "" && (svcOld == nil || (svcOld != nil && svcOld.Spec.ClusterIP == "")) {
+	if svc.Spec.ClusterIP == "" || svc.Spec.ClusterIP == "None" {
 		r.logger.V(1).Info("Ignoring headless service", "svc", k8s.NamespacedName(svc))
 		return nil, nil
 	}
