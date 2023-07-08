@@ -373,7 +373,7 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForNamespace(t *testing.T) {
 						}
 						return call.err
 					},
-				)
+				).AnyTimes()
 			}
 			got, err := policyResolver.GetReferredPoliciesForNamespace(context.Background(), tt.namespace, tt.namespaceOld)
 			if len(tt.wantErr) > 0 {

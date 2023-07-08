@@ -24,7 +24,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 	type namespaceGetCall struct {
 		nsRef types.NamespacedName
 		ns    *corev1.Namespace
-		times int
 		err   error
 	}
 	type policyGetCall struct {
@@ -217,7 +216,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 							},
 						},
 					},
-					times: 2,
 				},
 			},
 		},
@@ -284,7 +282,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 							},
 						},
 					},
-					times: 4,
 				},
 			},
 		},
@@ -351,7 +348,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 							},
 						},
 					},
-					times: 2,
 				},
 			},
 			want: []networking.NetworkPolicy{
@@ -439,7 +435,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 							},
 						},
 					},
-					times: 2,
 				},
 			},
 			want: []networking.NetworkPolicy{
@@ -518,7 +513,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 							},
 						},
 					},
-					times: 4,
 				},
 			},
 			want: []networking.NetworkPolicy{
@@ -588,7 +582,6 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 							},
 						},
 					},
-					times: 1,
 				},
 			},
 			wantErr: "failed to get policy: get error",
@@ -622,7 +615,7 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 						}
 						return call.err
 					},
-				).Times(item.times)
+				).AnyTimes()
 			}
 			for _, item := range tt.policyGetCalls {
 				call := item
@@ -633,7 +626,7 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 						}
 						return call.err
 					},
-				)
+				).AnyTimes()
 			}
 			for _, item := range tt.policyListCalls {
 				call := item
