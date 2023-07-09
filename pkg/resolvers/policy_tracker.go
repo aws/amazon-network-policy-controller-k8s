@@ -29,6 +29,7 @@ type defaultPolicyTracker struct {
 	egressRulesPolicies sync.Map
 }
 
+// UpdatePolicy updates the policy tracker with the given policy
 func (t *defaultPolicyTracker) UpdatePolicy(policy *networking.NetworkPolicy) {
 	if t.containsNamespaceReference(policy) {
 		t.logger.V(1).Info("policy contains ns references", "policy", k8s.NamespacedName(policy))
@@ -46,12 +47,14 @@ func (t *defaultPolicyTracker) UpdatePolicy(policy *networking.NetworkPolicy) {
 	}
 }
 
+// RemovePolicy removes the given policy from the policy tracker during during deletion
 func (t *defaultPolicyTracker) RemovePolicy(policy *networking.NetworkPolicy) {
 	t.logger.V(1).Info("remove from tracking", "policy", k8s.NamespacedName(policy))
 	t.namespacedPolicies.Delete(k8s.NamespacedName(policy))
 	t.egressRulesPolicies.Delete(k8s.NamespacedName(policy))
 }
 
+// GetPoliciesWithNamespaceReferences returns the set of policies that have namespace references in the ingress/egress rules
 func (t *defaultPolicyTracker) GetPoliciesWithNamespaceReferences() sets.Set[types.NamespacedName] {
 	policies := sets.Set[types.NamespacedName]{}
 	t.namespacedPolicies.Range(func(k, _ interface{}) bool {
@@ -61,6 +64,7 @@ func (t *defaultPolicyTracker) GetPoliciesWithNamespaceReferences() sets.Set[typ
 	return policies
 }
 
+// GetPoliciesWithEgressRules returns the set of policies that have egress rules
 func (t *defaultPolicyTracker) GetPoliciesWithEgressRules() sets.Set[types.NamespacedName] {
 	policies := sets.Set[types.NamespacedName]{}
 	t.egressRulesPolicies.Range(func(k, _ interface{}) bool {
