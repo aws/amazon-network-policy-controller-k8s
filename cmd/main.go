@@ -78,14 +78,7 @@ func main() {
 		setupLog.Error(err, "unable to build REST config")
 		os.Exit(1)
 	}
-	rtOpts := config.BuildRuntimeOptions(controllerCFG.RuntimeConfig, scheme)
-
-	mgr, err := ctrl.NewManager(restCFG, rtOpts)
-	if err != nil {
-		setupLog.Error(err, "unable to create controller manager")
-		os.Exit(1)
-	}
-	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
+	clientSet, err := kubernetes.NewForConfig(restCFG)
 	if err != nil {
 		setupLog.Error(err, "unable to obtain clientSet")
 		os.Exit(1)
@@ -104,6 +97,18 @@ func main() {
 			os.Exit(1)
 		}
 		enableNetworkPolicyController = configMapManager.IsControllerEnabled()
+		if !enableNetworkPolicyController {
+			setupLog.Info("Disabling leader election since network policy controller is not enabled")
+			controllerCFG.RuntimeConfig.EnableLeaderElection = false
+		}
+	}
+
+	rtOpts := config.BuildRuntimeOptions(controllerCFG.RuntimeConfig, scheme)
+
+	mgr, err := ctrl.NewManager(restCFG, rtOpts)
+	if err != nil {
+		setupLog.Error(err, "unable to create controller manager")
+		os.Exit(1)
 	}
 
 	policyEndpointsManager := policyendpoints.NewPolicyEndpointsManager(mgr.GetClient(),
