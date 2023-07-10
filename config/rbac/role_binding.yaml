@@ -3,17 +3,35 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app.kubernetes.io/name: clusterrolebinding
-    app.kubernetes.io/instance: manager-rolebinding
+    app.kubernetes.io/instance: controller-rolebinding
     app.kubernetes.io/component: rbac
     app.kubernetes.io/created-by: amazon-network-policy-controller-k8s
     app.kubernetes.io/part-of: amazon-network-policy-controller-k8s
     app.kubernetes.io/managed-by: kustomize
-  name: manager-rolebinding
+  name: controller-k8s-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: manager-role
+  name: controller-k8s
 subjects:
 - kind: ServiceAccount
-  name: controller-manager
-  namespace: system
+  name: controller-k8s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: rolebinding
+    app.kubernetes.io/instance: configmap-rolebinding
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: amazon-network-policy-controller-k8s
+    app.kubernetes.io/part-of: amazon-network-policy-controller-k8s
+    app.kubernetes.io/managed-by: kustomize
+  name: controller-k8s-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: controller-k8s
+subjects:
+  - kind: ServiceAccount
+    name: controller-k8s

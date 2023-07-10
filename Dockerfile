@@ -1,9 +1,13 @@
-# Build the manager binary
-FROM golang:1.19 as builder
-ARG TARGETOS
-ARG TARGETARCH
+ARG BASE_IMAGE
+ARG BUILD_IMAGE
+ARG GO_RUNNER_IMAGE
+ARG ARCH=amd64
+# Build the controller binary
+FROM $BUILD_IMAGE as builder
 
 WORKDIR /workspace
+ENV GOPROXY direct
+
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
@@ -12,22 +16,27 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
+COPY .git/ .git/
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
+COPY pkg/ pkg/
 COPY internal/controller/ internal/controller/
 
+# Version package for passing the ldflags
+# TODO: change this to network controller's version
+ENV VERSION_PKG=https://github.com/aws/amazon-network-policy-controller-k8s/pkg/version
 # Build
-# the GOARCH has not a default value to allow the binary be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+RUN GIT_VERSION=$(git describe --tags --always) && \
+        GIT_COMMIT=$(git rev-parse HEAD) && \
+        BUILD_DATE=$(date +%Y-%m-%dT%H:%M:%S%z) && \
+        CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} GO111MODULE=on go build \
+        -ldflags="-X ${VERSION_PKG}.GitVersion=${GIT_VERSION} -X ${VERSION_PKG}.GitCommit=${GIT_COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" -a -o controller main.go
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+FROM $BASE_IMAGE
+
 WORKDIR /
-COPY --from=builder /workspace/manager .
+COPY --from=$GO_RUNNER_IMAGE /go-runner /usr/local/bin/go-runner
+COPY --from=builder /workspace/controller .
 USER 65532:65532
 
-ENTRYPOINT ["/manager"]
+ENTRYPOINT ["/controller"]
