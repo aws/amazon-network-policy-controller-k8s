@@ -172,6 +172,7 @@ $(MOCKGEN): $(LOCALBIN)
 GOARCH=amd64
 BUILD_IMAGE=public.ecr.aws/docker/library/golang:1.20.5
 BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
+GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3
 .PHONY: docker-buildx
 docker-buildx: test
 	docker buildx build --platform=$(PLATFORMS) -t $(IMG)-$(GOARCH) --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $(GOARCH) --load .

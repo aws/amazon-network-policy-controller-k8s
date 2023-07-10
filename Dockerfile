@@ -1,5 +1,6 @@
 ARG BASE_IMAGE
 ARG BUILD_IMAGE
+ARG GO_RUNNER_IMAGE
 ARG ARCH=amd64
 # Build the controller binary
 FROM $BUILD_IMAGE as builder
@@ -15,6 +16,7 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
+COPY .git/ .git/
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY pkg/ pkg/
@@ -33,7 +35,7 @@ RUN GIT_VERSION=$(git describe --tags --always) && \
 FROM $BASE_IMAGE
 
 WORKDIR /
-COPY --from=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3 /go-runner /usr/local/bin/go-runner
+COPY --from=$GO_RUNNER_IMAGE /go-runner /usr/local/bin/go-runner
 COPY --from=builder /workspace/controller .
 USER 65532:65532
 
