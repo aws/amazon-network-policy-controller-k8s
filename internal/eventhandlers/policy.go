@@ -18,9 +18,9 @@ package eventhandlers
 
 import (
 	"context"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 	"time"
 
-	"github.com/aws/amazon-network-policy-controller-k8s/pkg/backend"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/go-logr/logr"
 	networking "k8s.io/api/networking/v1"
@@ -33,7 +33,7 @@ import (
 )
 
 // NewEnqueueRequestForPolicyEvent constructs new enqueueRequestsForPolicyEvent
-func NewEnqueueRequestForPolicyEvent(policyTracker backend.PolicyTracker, podUpdateBatchPeriodDuration time.Duration,
+func NewEnqueueRequestForPolicyEvent(policyTracker resolvers.PolicyTracker, podUpdateBatchPeriodDuration time.Duration,
 	logger logr.Logger) handler.EventHandler {
 	return &enqueueRequestForPolicyEvent{
 		policyTracker:                policyTracker,
@@ -45,7 +45,7 @@ func NewEnqueueRequestForPolicyEvent(policyTracker backend.PolicyTracker, podUpd
 var _ handler.EventHandler = (*enqueueRequestForPolicyEvent)(nil)
 
 type enqueueRequestForPolicyEvent struct {
-	policyTracker                backend.PolicyTracker
+	policyTracker                resolvers.PolicyTracker
 	podUpdateBatchPeriodDuration time.Duration
 	logger                       logr.Logger
 }

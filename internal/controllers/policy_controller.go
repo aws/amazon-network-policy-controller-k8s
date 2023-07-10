@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -32,10 +31,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/aws/amazon-network-policy-controller-k8s/internal/eventhandlers"
-	"github.com/aws/amazon-network-policy-controller-k8s/pkg/backend"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/config"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
 const (
@@ -45,7 +44,7 @@ const (
 
 func NewPolicyReconciler(k8sClient client.Client, policyEndpointsManager policyendpoints.PolicyEndpointsManager,
 	controllerConfig config.ControllerConfig, finalizerManager k8s.FinalizerManager, logger logr.Logger) *policyReconciler {
-	policyTracker := backend.NewPolicyTracker(logger.WithName("policy-tracker"))
+	policyTracker := resolvers.NewPolicyTracker(logger.WithName("policy-tracker"))
 	policyResolver := resolvers.NewPolicyReferenceResolver(k8sClient, policyTracker, logger.WithName("policy-resolver"))
 	return &policyReconciler{
 		k8sClient:                    k8sClient,
@@ -64,7 +63,7 @@ var _ reconcile.Reconciler = (*policyReconciler)(nil)
 type policyReconciler struct {
 	k8sClient                    client.Client
 	policyResolver               resolvers.PolicyReferenceResolver
-	policyTracker                backend.PolicyTracker
+	policyTracker                resolvers.PolicyTracker
 	policyEndpointsManager       policyendpoints.PolicyEndpointsManager
 	podUpdateBatchPeriodDuration time.Duration
 	finalizerManager             k8s.FinalizerManager
