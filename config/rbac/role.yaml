@@ -3,7 +3,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   creationTimestamp: null
-  name: manager-role
+  name: controller-k8s
 rules:
 - apiGroups:
   - ""
@@ -64,4 +64,22 @@ rules:
   - list
   - patch
   - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: controller-k8s
+  namespace: system
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - amazon-vpc-cni
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
   - watch
