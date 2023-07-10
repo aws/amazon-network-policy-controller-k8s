@@ -185,7 +185,7 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, peer
 				return nil, err
 			}
 		}
-		r.logger.Info("resolved namespaces", "list", namespaces)
+		r.logger.V(1).Info("Namespaces for network peers resolution", "list", namespaces, "policy", k8s.NamespacedName(policy))
 		for _, ns := range namespaces {
 			networkPeers = append(networkPeers, r.getMatchingPodAddresses(ctx, peer.PodSelector, ns, ports)...)
 		}
@@ -209,7 +209,7 @@ func (r *defaultEndpointsResolver) resolveServiceClusterIPs(ctx context.Context,
 				return nil, err
 			}
 		}
-		r.logger.Info("Resolved namespaces for clusterIP lookup", "list", namespaces)
+		r.logger.V(1).Info("Namespaces for service clusterIP lookup", "list", namespaces)
 		for _, ns := range namespaces {
 			networkPeers = append(networkPeers, r.getMatchingServiceClusterIPs(ctx, peer.PodSelector, ns, ports)...)
 		}
@@ -248,7 +248,6 @@ func (r *defaultEndpointsResolver) resolveNamespaces(ctx context.Context, ls *me
 	}); err != nil {
 		return nil, errors.Wrap(err, "unable to list namespaces")
 	}
-	r.logger.Info("resolved namespaces", "count", len(nsList.Items))
 	for _, ns := range nsList.Items {
 		namespaces = append(namespaces, ns.Name)
 	}
@@ -274,7 +273,7 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 		r.logger.Info("Unable to List Pods", "err", err)
 		return nil
 	}
-	r.logger.Info("Got pods ", "count", len(podList.Items))
+	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", podSelector.String())
 	for _, pod := range podList.Items {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) > 0 {

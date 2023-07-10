@@ -84,7 +84,7 @@ func (h *enqueueRequestForServiceEvent) enqueueReferredPolicies(ctx context.Cont
 	}
 	for i := range referredPolicies {
 		policy := &referredPolicies[i]
-		h.logger.Info("Enqueue policies from service reference", "policy", k8s.NamespacedName(policy), "svc", k8s.NamespacedName(svc))
+		h.logger.V(1).Info("Enqueue policies from service reference", "policy", k8s.NamespacedName(policy), "svc", k8s.NamespacedName(svc))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
 		}
