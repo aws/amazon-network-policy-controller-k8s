@@ -11,7 +11,6 @@ import (
 	"github.com/samber/lo"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -79,9 +78,6 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 	for _, policyEndpoint := range updateList {
 		oldRes := &policyinfo.PolicyEndpoint{}
 		if err := m.k8sClient.Get(ctx, k8s.NamespacedName(&policyEndpoint), oldRes); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
 			return err
 		}
 		if equality.Semantic.DeepEqual(oldRes.Spec, policyEndpoint.Spec) {

@@ -57,55 +57,51 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 }
 
 func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
-	var ingressRules []policyinfo.EndpointInfo
+	var ingressEndpoints []policyinfo.EndpointInfo
 	for _, rule := range policy.Spec.Ingress {
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
 		if rule.From == nil {
-			ingressRules = append(ingressRules, r.getAllowAllNetworkPeers(rule.Ports)...)
+			ingressEndpoints = append(ingressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
 			continue
 		}
-		resolvedPeers, err := r.resolveNetworkPeers(ctx, rule.From, policy, rule.Ports)
+		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports)
 		if err != nil {
-			r.logger.V(1).Info("unable to resolve ingress network peers", "err", err)
-			return nil, err
+			return nil, errors.Wrap(err, "unable to resolve ingress network peers")
 		}
-		ingressRules = append(ingressRules, resolvedPeers...)
+		ingressEndpoints = append(ingressEndpoints, resolvedPeers...)
 	}
-	r.logger.V(1).Info("Resolved ingress rules", "policy", k8s.NamespacedName(policy), "addresses", ingressRules)
-	return ingressRules, nil
+	r.logger.V(1).Info("Resolved ingress rules", "policy", k8s.NamespacedName(policy), "addresses", ingressEndpoints)
+	return ingressEndpoints, nil
 }
 
 func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
-	var egressRules []policyinfo.EndpointInfo
+	var egressEndpoints []policyinfo.EndpointInfo
 	for _, rule := range policy.Spec.Egress {
 		r.logger.V(1).Info("computing egress addresses", "peers", rule.To)
 		if rule.To == nil {
-			egressRules = append(egressRules, r.getAllowAllNetworkPeers(rule.Ports)...)
+			egressEndpoints = append(egressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
 			continue
 		}
-		resolvedPeers, err := r.resolveNetworkPeers(ctx, rule.To, policy, rule.Ports)
+		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports)
 		if err != nil {
-			r.logger.V(1).Info("unable to resolve egress network peers", "err", err)
-			return nil, err
+			return nil, errors.Wrap(err, "unable to resolve egress network peers")
 		}
 		resolvedClusterIPs, err := r.resolveServiceClusterIPs(ctx, rule.To, policy.Namespace, rule.Ports)
 		if err != nil {
-			r.logger.V(1).Info("unable to resolve service cluster IPs for egress", "err", err)
-			return nil, err
+			return nil, errors.Wrap(err, "unable to resolve service cluster IPs for egress")
 		}
-		egressRules = append(egressRules, resolvedPeers...)
-		egressRules = append(egressRules, resolvedClusterIPs...)
+		egressEndpoints = append(egressEndpoints, resolvedPeers...)
+		egressEndpoints = append(egressEndpoints, resolvedClusterIPs...)
 	}
-	r.logger.V(1).Info("Resolved egress rules", "policy", k8s.NamespacedName(policy), "addresses", egressRules)
-	return egressRules, nil
+	r.logger.V(1).Info("Resolved egress rules", "policy", k8s.NamespacedName(policy), "addresses", egressEndpoints)
+	return egressEndpoints, nil
 }
 
 func (r *defaultEndpointsResolver) computePodSelectorEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.PodEndpoint, error) {
 	var podEndpoints []policyinfo.PodEndpoint
 	podSelector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
 	if err != nil {
-		r.logger.Info("Unable to get pod selector", "err", err)
-		return nil, err
+		return nil, errors.Wrap(err, "unable to get pod selector")
 	}
 	podList := &corev1.PodList{}
 	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
@@ -133,7 +129,7 @@ func (r *defaultEndpointsResolver) computePodSelectorEndpoints(ctx context.Conte
 func (r *defaultEndpointsResolver) getAllowAllNetworkPeers(ports []networking.NetworkPolicyPort) []policyinfo.EndpointInfo {
 	var portList []policyinfo.Port
 	for _, port := range ports {
-		if port := r.convertToPolicyInfoPort(port); port != nil {
+		if port := r.convertToPolicyInfoPortForCIDRs(port); port != nil {
 			portList = append(portList, *port)
 		}
 	}
@@ -152,11 +148,10 @@ func (r *defaultEndpointsResolver) getAllowAllNetworkPeers(ports []networking.Ne
 	}
 }
 
-func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, peers []networking.NetworkPolicyPeer,
-	policy *networking.NetworkPolicy, ports []networking.NetworkPolicyPort) ([]policyinfo.EndpointInfo, error) {
+func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, policy *networking.NetworkPolicy,
+	peers []networking.NetworkPolicyPeer, ports []networking.NetworkPolicyPort) ([]policyinfo.EndpointInfo, error) {
 	var networkPeers []policyinfo.EndpointInfo
 	for _, peer := range peers {
-		var namespaces []string
 		if peer.IPBlock != nil {
 			var except []policyinfo.NetworkAddress
 			for _, ea := range peer.IPBlock.Except {
@@ -164,10 +159,13 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, peer
 			}
 			var portList []policyinfo.Port
 			for _, port := range ports {
-				if port := r.convertToPolicyInfoPort(port); port != nil {
+				if port := r.convertToPolicyInfoPortForCIDRs(port); port != nil {
 					portList = append(portList, *port)
 				}
 			}
+			// A non-empty input port list would imply the user wants to allow traffic only on the specified ports.
+			// However, in this case we are not able to resolve any of the ports from the CIDR list alone. In this
+			// case we do not add the CIDR to the list of resolved peers to prevent allow all ports.
 			if len(ports) != 0 && len(portList) == 0 {
 				continue
 			}
@@ -178,13 +176,14 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, peer
 			})
 			continue
 		}
-		namespaces = append(namespaces, policy.Namespace)
+		var namespaces []string
 		if peer.NamespaceSelector != nil {
 			var err error
-			namespaces, err = r.resolveNamespaces(ctx, peer.NamespaceSelector)
-			if err != nil {
+			if namespaces, err = r.resolveNamespaces(ctx, peer.NamespaceSelector); err != nil {
 				return nil, err
 			}
+		} else {
+			namespaces = []string{policy.Namespace}
 		}
 		r.logger.V(1).Info("Namespaces for network peers resolution", "list", namespaces, "policy", k8s.NamespacedName(policy))
 		for _, ns := range namespaces {
@@ -218,7 +217,9 @@ func (r *defaultEndpointsResolver) resolveServiceClusterIPs(ctx context.Context,
 	return networkPeers, nil
 }
 
-func (r *defaultEndpointsResolver) convertToPolicyInfoPort(port networking.NetworkPolicyPort) *policyinfo.Port {
+// convertToPolicyInfoPortForCIDRs converts the NetworkPolicyPort to policyinfo.Port. This is used for CIDR based
+// rules where it is not possible to resolve the named ports.
+func (r *defaultEndpointsResolver) convertToPolicyInfoPortForCIDRs(port networking.NetworkPolicyPort) *policyinfo.Port {
 	protocol := *port.Protocol
 	switch {
 	case port.Port == nil:
