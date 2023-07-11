@@ -313,6 +313,11 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	return addresses
 }
 
+// getMatchingServiceClusterIPs returns the clusterIPs of the services with service.spec.Selector matching the pod selector
+// in the egress rules. This serves as a workaround for the network agent in case of the policy enforcement for egress traffic
+// from the pod to the cluster IPs. The network agent limitation arises since it attaches the ebpf probes to the TC hook of the
+// pod veth interface and thus unable to see the pod IP after the DNAT happens for the clusterIPs. The current version is limited
+// to tracking the services where the service.spec.Selector matches the pod selector in the egress rules.
 func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Context, ls *metav1.LabelSelector, namespace string,
 	ports []networking.NetworkPolicyPort) []policyinfo.EndpointInfo {
 	var networkPeers []policyinfo.EndpointInfo
@@ -332,32 +337,33 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 		return nil
 	}
 	for _, svc := range svcList.Items {
-		if svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
-			var portList []policyinfo.Port
-			for _, port := range ports {
-				var portPtr *int32
-				if port.Port != nil {
-					portVal, err := r.getMatchingServicePort(ctx, &svc, port.Port, *port.Protocol)
-					if err != nil {
-						r.logger.V(1).Info("Unable to lookup service port", "err", err)
-						continue
-					}
-					portPtr = &portVal
+		if !svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
+			continue
+		}
+		var portList []policyinfo.Port
+		for _, port := range ports {
+			var portPtr *int32
+			if port.Port != nil {
+				portVal, err := r.getMatchingServicePort(ctx, &svc, port.Port, *port.Protocol)
+				if err != nil {
+					r.logger.V(1).Info("Unable to lookup service port", "err", err)
+					continue
 				}
-				portList = append(portList, policyinfo.Port{
-					Protocol: port.Protocol,
-					Port:     portPtr,
-					EndPort:  port.EndPort,
-				})
+				portPtr = &portVal
 			}
-			if len(ports) != len(portList) && len(portList) == 0 {
-				continue
-			}
-			networkPeers = append(networkPeers, policyinfo.EndpointInfo{
-				CIDR:  policyinfo.NetworkAddress(svc.Spec.ClusterIP),
-				Ports: portList,
+			portList = append(portList, policyinfo.Port{
+				Protocol: port.Protocol,
+				Port:     portPtr,
+				EndPort:  port.EndPort,
 			})
 		}
+		if len(ports) != len(portList) && len(portList) == 0 {
+			continue
+		}
+		networkPeers = append(networkPeers, policyinfo.EndpointInfo{
+			CIDR:  policyinfo.NetworkAddress(svc.Spec.ClusterIP),
+			Ports: portList,
+		})
 	}
 	return networkPeers
 }
