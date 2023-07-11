@@ -259,13 +259,15 @@ func (r *defaultEndpointsResolver) resolveNamespaces(ctx context.Context, ls *me
 func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, ls *metav1.LabelSelector, namespace string,
 	ports []networking.NetworkPolicyPort) []policyinfo.EndpointInfo {
 	var addresses []policyinfo.EndpointInfo
+	var podSelector labels.Selector
 	if ls == nil {
-		ls = &metav1.LabelSelector{}
-	}
-	podSelector, err := metav1.LabelSelectorAsSelector(ls)
-	if err != nil {
-		r.logger.Info("Unable to get pod selector", "err", err)
-		return nil
+		podSelector = labels.Everything()
+	} else {
+		var err error
+		if podSelector, err = metav1.LabelSelectorAsSelector(ls); err != nil {
+			r.logger.Info("Unable to get pod selector", "err", err)
+			return nil
+		}
 	}
 	podList := &corev1.PodList{}
 	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
