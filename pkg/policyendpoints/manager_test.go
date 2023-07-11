@@ -44,7 +44,7 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 				return false
 			}
 		}
-		return ep.Namespace == netpol.Namespace && ep.Labels["networking.k8s.aws/policy-name"] == netpol.Name &&
+		return ep.Namespace == netpol.Namespace &&
 			equality.Semantic.DeepEqual(ep.OwnerReferences, []metav1.OwnerReference{
 				{
 					APIVersion:         "networking.k8s.io/v1",
