@@ -22,8 +22,6 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
-const labelPolicyName = "networking.k8s.aws/policy-name"
-
 type PolicyEndpointsManager interface {
 	Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error
 	Cleanup(ctx context.Context, policy *networking.NetworkPolicy) error
@@ -58,7 +56,7 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
 	if err := m.k8sClient.List(ctx, policyEndpointList,
 		client.InNamespace(policy.Namespace),
-		client.MatchingLabels{labelPolicyName: policy.Name}); err != nil {
+		client.MatchingFields{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
 		return err
 	}
 	existingPolicyEndpoints := make([]policyinfo.PolicyEndpoint, 0, len(policyEndpointList.Items))
@@ -110,7 +108,7 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
 	if err := m.k8sClient.List(ctx, policyEndpointList,
 		client.InNamespace(policy.Namespace),
-		client.MatchingLabels{labelPolicyName: policy.Name}); err != nil {
+		client.MatchingLabels{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
 		return errors.Wrap(err, "unable to list policyendpoints")
 	}
 	for _, policyEndpoint := range policyEndpointList.Items {
@@ -310,9 +308,6 @@ func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPol
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:    policy.Namespace,
 			GenerateName: policy.Name + "-",
-			Labels: map[string]string{
-				labelPolicyName: policy.Name,
-			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         "networking.k8s.io/v1",
