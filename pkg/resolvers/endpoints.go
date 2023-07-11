@@ -278,36 +278,36 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", podSelector.String())
 	for _, pod := range podList.Items {
 		podIP := k8s.GetPodIP(&pod)
-		if len(podIP) > 0 {
-			var portList []policyinfo.Port
-			for _, port := range ports {
-				var portPtr *int32
-				if port.Port != nil {
-					portVal, _, err := k8s.LookupContainerPortAndName(&pod, *port.Port, *port.Protocol)
-					if err != nil {
-						// Isolate the pod for the port if we are unable to resolve the named port
-						r.logger.Info("Unable to lookup container port", "pod", k8s.NamespacedName(&pod),
-							"port", *port.Port, "err", err)
-						continue
-					}
-					portPtr = &portVal
-				}
-				portList = append(portList, policyinfo.Port{
-					Protocol: port.Protocol,
-					Port:     portPtr,
-					EndPort:  port.EndPort,
-				})
-			}
-			if len(ports) != len(portList) && len(portList) == 0 {
-				continue
-			}
-			addresses = append(addresses, policyinfo.EndpointInfo{
-				CIDR:  policyinfo.NetworkAddress(podIP),
-				Ports: portList,
-			})
-		} else {
+		if len(podIP) == 0 {
 			r.logger.V(1).Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
+			continue
 		}
+		var portList []policyinfo.Port
+		for _, port := range ports {
+			var portPtr *int32
+			if port.Port != nil {
+				portVal, _, err := k8s.LookupContainerPortAndName(&pod, *port.Port, *port.Protocol)
+				if err != nil {
+					// Isolate the pod for the port if we are unable to resolve the named port
+					r.logger.Info("Unable to lookup container port", "pod", k8s.NamespacedName(&pod),
+						"port", *port.Port, "err", err)
+					continue
+				}
+				portPtr = &portVal
+			}
+			portList = append(portList, policyinfo.Port{
+				Protocol: port.Protocol,
+				Port:     portPtr,
+				EndPort:  port.EndPort,
+			})
+		}
+		if len(ports) != len(portList) && len(portList) == 0 {
+			continue
+		}
+		addresses = append(addresses, policyinfo.EndpointInfo{
+			CIDR:  policyinfo.NetworkAddress(podIP),
+			Ports: portList,
+		})
 	}
 
 	return addresses
