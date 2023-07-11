@@ -1,19 +1,19 @@
 package policyendpoints
 
 import (
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 )
 
-func Test_policyEndpointsManager_getgetPolicyEndpoints(t *testing.T) {
+func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 	type fields struct {
 		endpointChunkSize int
 	}
@@ -378,7 +378,7 @@ func Test_policyEndpointsManager_getgetPolicyEndpoints(t *testing.T) {
 			m := &policyEndpointsManager{
 				endpointChunkSize: tt.fields.endpointChunkSize,
 			}
-			createList, updateList, deleteList, err := m.getPolicyEndpoints(tt.args.policy, tt.args.policyEndpoints,
+			createList, updateList, deleteList, err := m.computePolicyEndpoints(tt.args.policy, tt.args.policyEndpoints,
 				tt.args.ingressRules, tt.args.egressRules, tt.args.podselectorEndpoints)
 
 			if len(tt.wantErr) > 0 {

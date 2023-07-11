@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	"github.com/samber/lo"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,7 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
-	"github.com/aws/amazon-network-policy-controller-k8s/pkg/algorithm"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
@@ -66,7 +66,7 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
 	}
 
-	createList, updateList, deleteList, err := m.getPolicyEndpoints(policy, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
+	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
 	if err != nil {
 		return err
 	}
@@ -122,9 +122,9 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 	return nil
 }
 
-// getPolicyEndpoints returns the policy endpoints for the given policy
+// computePolicyEndpoints computes the policy endpoints for the given policy
 // The return values are list of policy endpoints to create, update and delete
-func (m *policyEndpointsManager) getPolicyEndpoints(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.NetworkPolicy,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
 	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint,
 	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, error) {
@@ -209,7 +209,7 @@ func (m *policyEndpointsManager) getPolicyEndpoints(policy *networking.NetworkPo
 		}
 	}
 
-	ingressRuleChunks := algorithm.ChunkSlice(remainingIngressRuleKeys.UnsortedList(), m.endpointChunkSize)
+	ingressRuleChunks := lo.Chunk(remainingIngressRuleKeys.UnsortedList(), m.endpointChunkSize)
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	for _, chunk := range ingressRuleChunks {
 		// check in the existing lists if chunk fits, otherwise allocate a new ep
@@ -234,7 +234,7 @@ func (m *policyEndpointsManager) getPolicyEndpoints(policy *networking.NetworkPo
 		createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 	}
 
-	egressRuleChunks := algorithm.ChunkSlice(remainingEgressRulesKeys.UnsortedList(), m.endpointChunkSize)
+	egressRuleChunks := lo.Chunk(remainingEgressRulesKeys.UnsortedList(), m.endpointChunkSize)
 	for _, chunk := range egressRuleChunks {
 		// check in the existing to-update/to-delete list if chunk fits, otherwise allocate a new ep
 		var assigned bool
@@ -257,7 +257,7 @@ func (m *policyEndpointsManager) getPolicyEndpoints(policy *networking.NetworkPo
 		newEP := m.newPolicyEndpoint(policy, nil, m.getListOfEndpointInfoFromHash(chunk, egressEndpointsMap), nil)
 		createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 	}
-	podEndpointChunks := algorithm.ChunkSlice(remainingPodEndpoints.UnsortedList(), m.endpointChunkSize)
+	podEndpointChunks := lo.Chunk(remainingPodEndpoints.UnsortedList(), m.endpointChunkSize)
 	for _, chunk := range podEndpointChunks {
 		var assigned bool
 		for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{createPolicyEndpoints, modifiedEndpoints, potentialDeletes} {

@@ -16,7 +16,7 @@ import (
 )
 
 type EndpointsResolver interface {
-	// Resolve returns the resolved endpoints for the given policy create, update and delete list
+	// Resolve returns the resolved endpoints for the given policy ingress, egress rules and pod selector labels.
 	Resolve(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, []policyinfo.EndpointInfo,
 		[]policyinfo.PodEndpoint, error)
 }
@@ -38,11 +38,11 @@ type defaultEndpointsResolver struct {
 
 func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo,
 	[]policyinfo.EndpointInfo, []policyinfo.PodEndpoint, error) {
-	ingressRules, err := r.computeIngressRules(ctx, policy)
+	ingressEndpoints, err := r.computeIngressEndpoints(ctx, policy)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	egressRules, err := r.computeEgressRules(ctx, policy)
+	egressEndpoints, err := r.computeEgressEndpoints(ctx, policy)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -50,18 +50,19 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	r.logger.Info("Resolved endpoints", "policy", k8s.NamespacedName(policy), "ingress", len(ingressRules), "egress",
-		len(egressRules), "pod selector endpoints", len(podSelectorEndpoints))
+	r.logger.Info("Resolved endpoints", "policy", k8s.NamespacedName(policy), "ingress", len(ingressEndpoints), "egress",
+		len(egressEndpoints), "pod selector endpoints", len(podSelectorEndpoints))
 
-	return ingressRules, egressRules, podSelectorEndpoints, nil
+	return ingressEndpoints, egressEndpoints, podSelectorEndpoints, nil
 }
 
-func (r *defaultEndpointsResolver) computeIngressRules(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
+func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
 	var ingressRules []policyinfo.EndpointInfo
 	for _, rule := range policy.Spec.Ingress {
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
 		if rule.From == nil {
 			ingressRules = append(ingressRules, r.getAllowAllNetworkPeers(rule.Ports)...)
+			continue
 		}
 		resolvedPeers, err := r.resolveNetworkPeers(ctx, rule.From, policy, rule.Ports)
 		if err != nil {
@@ -74,7 +75,7 @@ func (r *defaultEndpointsResolver) computeIngressRules(ctx context.Context, poli
 	return ingressRules, nil
 }
 
-func (r *defaultEndpointsResolver) computeEgressRules(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
+func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
 	var egressRules []policyinfo.EndpointInfo
 	for _, rule := range policy.Spec.Egress {
 		r.logger.V(1).Info("computing egress addresses", "peers", rule.To)
