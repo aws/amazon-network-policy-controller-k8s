@@ -92,7 +92,7 @@ func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context,
 	}
 	for i := range referredPolicies {
 		policy := &referredPolicies[i]
-		h.logger.Info("Enqueue from pod reference", "policy", k8s.NamespacedName(policy), "pod", k8s.NamespacedName(pod))
+		h.logger.V(1).Info("Enqueue from pod reference", "policy", k8s.NamespacedName(policy), "pod", k8s.NamespacedName(pod))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
 		}

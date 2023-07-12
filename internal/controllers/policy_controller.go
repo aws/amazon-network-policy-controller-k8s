@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -85,7 +86,10 @@ func (r *policyReconciler) Reconcile(ctx context.Context, request reconcile.Requ
 	return ctrl.Result{}, r.reconcile(ctx, request)
 }
 
-func (r *policyReconciler) SetupWithManager(_ context.Context, mgr ctrl.Manager) error {
+func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	if err := r.setupIndexes(ctx, mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	policyEventChan := make(chan event.GenericEvent)
 	policyEventHandler := eventhandlers.NewEnqueueRequestForPolicyEvent(r.policyTracker, r.podUpdateBatchPeriodDuration,
 		r.logger.WithName("eventHandler").WithName("policy"))
@@ -136,6 +140,14 @@ func (r *policyReconciler) cleanupPolicy(ctx context.Context, policy *networking
 		if err := r.finalizerManager.RemoveFinalizers(ctx, policy, policyFinalizerName); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (r *policyReconciler) setupIndexes(ctx context.Context, fieldIndexer client.FieldIndexer) error {
+	if err := fieldIndexer.IndexField(ctx, &policyinfo.PolicyEndpoint{}, policyendpoints.IndexKeyPolicyReferenceName,
+		policyendpoints.IndexFunctionPolicyReferenceName); err != nil {
+		return err
 	}
 	return nil
 }

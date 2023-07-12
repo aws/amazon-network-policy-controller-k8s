@@ -42,7 +42,7 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/configmap"
-	"github.com/aws/amazon-network-policy-controller-k8s/version"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/version"
 	//+kubebuilder:scaffold:imports
 )
 

@@ -70,7 +70,7 @@ func (h *enqueueRequestForNamespaceEvent) enqueueReferredPolicies(ctx context.Co
 	}
 	for i := range referredPolicies {
 		policy := &referredPolicies[i]
-		h.logger.Info("Enqueue from namespace reference", "policy", k8s.NamespacedName(policy), "namespace", k8s.NamespacedName(ns))
+		h.logger.V(1).Info("Enqueue from namespace reference", "policy", k8s.NamespacedName(policy), "namespace", k8s.NamespacedName(ns))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
 		}
