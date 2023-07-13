@@ -1,6 +1,5 @@
 ARG BASE_IMAGE
 ARG BUILD_IMAGE
-ARG GO_RUNNER_IMAGE
 ARG ARCH=amd64
 # Build the controller binary
 FROM $BUILD_IMAGE as builder
@@ -20,7 +19,7 @@ COPY .git/ .git/
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY pkg/ pkg/
-COPY internal/controller/ internal/controller/
+COPY internal/ internal/
 
 # Version package for passing the ldflags
 # TODO: change this to network controller's version
@@ -30,12 +29,12 @@ RUN GIT_VERSION=$(git describe --tags --always) && \
         GIT_COMMIT=$(git rev-parse HEAD) && \
         BUILD_DATE=$(date +%Y-%m-%dT%H:%M:%S%z) && \
         CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} GO111MODULE=on go build \
-        -ldflags="-X ${VERSION_PKG}.GitVersion=${GIT_VERSION} -X ${VERSION_PKG}.GitCommit=${GIT_COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" -a -o controller main.go
+        -ldflags="-X ${VERSION_PKG}.GitVersion=${GIT_VERSION} -X ${VERSION_PKG}.GitCommit=${GIT_COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}" -a -o controller cmd/main.go
 
 FROM $BASE_IMAGE
 
 WORKDIR /
-COPY --from=$GO_RUNNER_IMAGE /go-runner /usr/local/bin/go-runner
+COPY --from=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3 /go-runner /usr/local/bin/go-runner
 COPY --from=builder /workspace/controller .
 USER 65532:65532
 
