@@ -42,3 +42,11 @@ func LookupListenPortFromPodSpec(svc *corev1.Service, pod *corev1.Pod, port ints
 	}
 	return 0, errors.Errorf("unable to find listener port for port %s on service %s", port.String(), NamespacedName(svc))
 }
+
+// IsServiceHeadless returns true if the service is headless
+func IsServiceHeadless(svc *corev1.Service) bool {
+	if svc.Spec.ClusterIP == "" || svc.Spec.ClusterIP == "None" {
+		return true
+	}
+	return false
+}

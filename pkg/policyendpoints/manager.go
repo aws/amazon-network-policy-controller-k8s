@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"golang.org/x/exp/maps"
 	"strconv"
 
 	"github.com/go-logr/logr"
@@ -67,7 +68,7 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 	if err != nil {
 		return err
 	}
-	m.logger.V(1).Info("Got policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+	m.logger.Info("Got policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
 	for _, policyEndpoint := range createList {
 		if err := m.k8sClient.Create(ctx, &policyEndpoint); err != nil {
 			return err
@@ -139,16 +140,13 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	// Go over the existing endpoints, and remove entries that are no longer needed
 	var modifiedEndpoints []policyinfo.PolicyEndpoint
 	var potentialDeletes []policyinfo.PolicyEndpoint
-	usedIngressRuleKeys := sets.Set[string]{}
-	usedEgressRulesKeys := sets.Set[string]{}
-	usedPodEndpoints := sets.Set[policyinfo.PodEndpoint]{}
 	for i := range existingPolicyEndpoints {
 		ingEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Ingress))
 		for _, ingRule := range existingPolicyEndpoints[i].Spec.Ingress {
 			ruleKey := m.getEndpointInfoKey(ingRule)
 			if _, exists := ingressEndpointsMap[ruleKey]; exists {
 				ingEndpointList = append(ingEndpointList, ingRule)
-				usedIngressRuleKeys.Insert(ruleKey)
+				delete(ingressEndpointsMap, ruleKey)
 			}
 		}
 		egEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Egress))
@@ -156,14 +154,14 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 			ruleKey := m.getEndpointInfoKey(egRule)
 			if _, exists := egressEndpointsMap[ruleKey]; exists {
 				egEndpointList = append(egEndpointList, egRule)
-				usedEgressRulesKeys.Insert(ruleKey)
+				delete(egressEndpointsMap, ruleKey)
 			}
 		}
 		podSelectorEndpointList := make([]policyinfo.PodEndpoint, 0, len(existingPolicyEndpoints[i].Spec.PodSelectorEndpoints))
 		for _, ps := range existingPolicyEndpoints[i].Spec.PodSelectorEndpoints {
 			if podSelectorEndpointSet.Has(ps) {
 				podSelectorEndpointList = append(podSelectorEndpointList, ps)
-				usedPodEndpoints.Insert(ps)
+				podSelectorEndpointSet.Delete(ps)
 			}
 		}
 		policyEndpointChanged := false
@@ -188,22 +186,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		}
 	}
 
-	remainingIngressRuleKeys := sets.Set[string]{}
-	remainingEgressRulesKeys := sets.Set[string]{}
-	remainingPodEndpoints := podSelectorEndpointSet.Difference(usedPodEndpoints)
-
-	for key := range ingressEndpointsMap {
-		if !usedIngressRuleKeys.Has(key) {
-			remainingIngressRuleKeys.Insert(key)
-		}
-	}
-	for key := range egressEndpointsMap {
-		if !usedEgressRulesKeys.Has(key) {
-			remainingEgressRulesKeys.Insert(key)
-		}
-	}
-
-	ingressRuleChunks := lo.Chunk(remainingIngressRuleKeys.UnsortedList(), m.endpointChunkSize)
+	ingressRuleChunks := lo.Chunk(maps.Keys(ingressEndpointsMap), m.endpointChunkSize)
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	for _, chunk := range ingressRuleChunks {
 		// check in the existing lists if chunk fits, otherwise allocate a new ep
@@ -228,7 +211,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 	}
 
-	egressRuleChunks := lo.Chunk(remainingEgressRulesKeys.UnsortedList(), m.endpointChunkSize)
+	egressRuleChunks := lo.Chunk(maps.Keys(egressEndpointsMap), m.endpointChunkSize)
 	for _, chunk := range egressRuleChunks {
 		// check in the existing to-update/to-delete list if chunk fits, otherwise allocate a new ep
 		var assigned bool
@@ -251,7 +234,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		newEP := m.newPolicyEndpoint(policy, nil, m.getListOfEndpointInfoFromHash(chunk, egressEndpointsMap), nil)
 		createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 	}
-	podEndpointChunks := lo.Chunk(remainingPodEndpoints.UnsortedList(), m.endpointChunkSize)
+	podEndpointChunks := lo.Chunk(podSelectorEndpointSet.UnsortedList(), m.endpointChunkSize)
 	for _, chunk := range podEndpointChunks {
 		var assigned bool
 		for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{createPolicyEndpoints, modifiedEndpoints, potentialDeletes} {
