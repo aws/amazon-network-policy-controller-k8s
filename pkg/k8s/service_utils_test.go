@@ -305,3 +305,42 @@ func Test_LookupListenPortFromPodSpec(t *testing.T) {
 		})
 	}
 }
+
+func Test_IsServiceHeadless(t *testing.T) {
+	tests := []struct {
+		name string
+		svc  *corev1.Service
+		want bool
+	}{
+		{
+			name: "headless service",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					ClusterIP: corev1.ClusterIPNone,
+				},
+			},
+			want: true,
+		},
+		{
+			name: "empty IP",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{},
+			},
+			want: true,
+		},
+		{
+			name: "some cluster IP",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.100.0.209",
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsServiceHeadless(tt.svc))
+		})
+	}
+
+}

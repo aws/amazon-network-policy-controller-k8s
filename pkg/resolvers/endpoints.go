@@ -339,7 +339,7 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 		return nil
 	}
 	for _, svc := range svcList.Items {
-		if !svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
+		if k8s.IsServiceHeadless(&svc) || !svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
 			continue
 		}
 		var portList []policyinfo.Port

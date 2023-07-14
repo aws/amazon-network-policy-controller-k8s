@@ -61,7 +61,7 @@ func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateE
 	newPolicy := e.ObjectNew.(*networking.NetworkPolicy)
 
 	h.logger.V(1).Info("Handling update event", "policy", k8s.NamespacedName(newPolicy))
-	if oldPolicy.Generation != newPolicy.Generation && equality.Semantic.DeepEqual(oldPolicy.Spec, newPolicy.Spec) &&
+	if !equality.Semantic.DeepEqual(newPolicy.ResourceVersion, oldPolicy.ResourceVersion) && equality.Semantic.DeepEqual(oldPolicy.Spec, newPolicy.Spec) &&
 		equality.Semantic.DeepEqual(oldPolicy.DeletionTimestamp.IsZero(), newPolicy.DeletionTimestamp.IsZero()) {
 		return
 	}

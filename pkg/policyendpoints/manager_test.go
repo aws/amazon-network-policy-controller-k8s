@@ -372,6 +372,76 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 				updateCount: 2,
 			},
 		},
+		{
+			name: "cleanup endpoints with same entries",
+			fields: fields{
+				endpointChunkSize: 3,
+			},
+			args: args{
+				policy: &networking.NetworkPolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "policy-namespace",
+						Name:      "policy-name",
+					},
+					Spec: networking.NetworkPolicySpec{},
+				},
+				policyEndpoints: []policyinfo.PolicyEndpoint{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: "policy-namespace",
+							Name:      "policy-name-1",
+						},
+						Spec: policyinfo.PolicyEndpointSpec{
+							Ingress: getEPInfoHelper([]policyinfo.NetworkAddress{"1.2.3.4", "1.2.3.5"}, nil, 3),
+							Egress:  getEPInfoHelper([]policyinfo.NetworkAddress{"2.2.0.0/16", "2.3.0.0/16"}, []policyinfo.NetworkAddress{"2.2.3.4"}, 1),
+							PodSelectorEndpoints: []policyinfo.PodEndpoint{
+								{
+									Name: "pod1",
+								},
+								{
+									Name: "pod2",
+								},
+							},
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: "policy-namespace",
+							Name:      "policy-name-dup",
+						},
+						Spec: policyinfo.PolicyEndpointSpec{
+							Ingress: getEPInfoHelper([]policyinfo.NetworkAddress{"1.2.3.5", "1.2.3.4"}, nil, 3),
+							Egress:  getEPInfoHelper([]policyinfo.NetworkAddress{"2.3.0.0/16", "2.2.0.0/16"}, []policyinfo.NetworkAddress{"2.2.3.4"}, 1),
+							PodSelectorEndpoints: []policyinfo.PodEndpoint{
+								{
+									Name: "pod1",
+								},
+								{
+									Name: "pod2",
+								},
+							},
+						},
+					},
+				},
+				ingressRules: getEPInfoHelper([]policyinfo.NetworkAddress{"1.2.3.4", "1.2.3.5"}, nil, 3),
+				egressRules:  getEPInfoHelper([]policyinfo.NetworkAddress{"2.2.0.0/16", "2.3.0.0/16"}, []policyinfo.NetworkAddress{"2.2.3.4"}, 1),
+				podselectorEndpoints: []policyinfo.PodEndpoint{
+					{
+						Name: "pod1",
+					},
+					{
+						Name: "pod2",
+					},
+				},
+				epValidator: func(_ *networking.NetworkPolicy, _ *policyinfo.PolicyEndpoint) bool {
+					return true
+				},
+			},
+			want: want{
+				deleteCount: 1,
+				updateCount: 1,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

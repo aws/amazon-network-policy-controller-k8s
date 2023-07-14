@@ -373,6 +373,36 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			},
 		},
 		{
+			name: "exclude headless service",
+			args: args{
+				netpol: egressPolicy,
+				podListCalls: []podListCall{
+					{
+						pods: []corev1.Pod{pod2, podNoIP, pod3},
+					},
+				},
+				serviceListCalls: []serviceListCall{
+					{
+						services: []corev1.Service{
+							{
+								Spec: corev1.ServiceSpec{
+									ClusterIP: "None",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantEgressEndpoints: []policyinfo.EndpointInfo{
+				{CIDR: "1.0.0.2"},
+				{CIDR: "1.0.0.3"},
+			},
+			wantPodEndpoints: []policyinfo.PodEndpoint{
+				{PodIP: "1.0.0.2", Name: "pod2", Namespace: "ns"},
+				{PodIP: "1.0.0.3", Name: "pod3", Namespace: "ns"},
+			},
+		},
+		{
 			name: "resolve network peers, ingress/egress",
 			args: args{
 				netpol: &networking.NetworkPolicy{
