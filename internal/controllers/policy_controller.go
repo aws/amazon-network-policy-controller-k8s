@@ -18,8 +18,9 @@ package controllers
 
 import (
 	"context"
-	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"time"
+
+	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -99,6 +101,11 @@ func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manage
 		r.logger.WithName("eventHandler").WithName("namespace"))
 	svcEventHandler := eventhandlers.NewEnqueueRequestForServiceEvent(policyEventChan, r.k8sClient, r.policyResolver,
 		r.logger.WithName("eventHandler").WithName("service"))
+
+	if err := mgr.AddHealthzCheck("policy-controller", healthz.Ping); err != nil {
+		r.logger.Error(err, "Failed to setup the policy controller healthz check")
+		return err
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
