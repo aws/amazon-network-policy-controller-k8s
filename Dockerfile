@@ -23,7 +23,7 @@ COPY internal/ internal/
 
 # Version package for passing the ldflags
 # TODO: change this to network controller's version
-ENV VERSION_PKG=https://github.com/aws/amazon-network-policy-controller-k8s/pkg/version
+ENV VERSION_PKG=github.com/aws/amazon-network-policy-controller-k8s/pkg/version
 # Build
 RUN GIT_VERSION=$(git describe --tags --always) && \
         GIT_COMMIT=$(git rev-parse HEAD) && \
