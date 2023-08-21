@@ -33,7 +33,7 @@ jobs:
         run: make test
       - name: Upload code coverage
         uses: codecov/codecov-action@v3
-docker-build:
+  docker-build:
     name: Build Docker images
     runs-on: ubuntu-latest
     steps:
