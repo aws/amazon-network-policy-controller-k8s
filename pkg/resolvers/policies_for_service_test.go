@@ -2,6 +2,9 @@ package resolvers
 
 import (
 	"context"
+	"sort"
+	"testing"
+
 	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
@@ -12,8 +15,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sort"
-	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
