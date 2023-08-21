@@ -176,3 +176,14 @@ GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-
 .PHONY: docker-buildx
 docker-buildx: test
 	docker buildx build --platform=$(PLATFORMS) -t $(IMG)-$(GOARCH) --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $(GOARCH) --load .
+
+# Check formatting of source code files without modification.
+check-format: FORMAT_FLAGS = -l
+check-format: format
+
+format:       ## Format all Go source code files.
+	@command -v goimports >/dev/null || { echo "ERROR: goimports not installed"; exit 1; }
+	@exit $(shell find ./* \
+	  -type f \
+	  -name '*.go' \
+	  -print0 | sort -z | xargs -0 -- goimports $(or $(FORMAT_FLAGS),-w) | wc -l | bc)

@@ -18,8 +18,9 @@ package eventhandlers
 
 import (
 	"context"
-	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 	"time"
+
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/go-logr/logr"

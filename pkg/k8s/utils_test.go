@@ -1,8 +1,9 @@
 package k8s
 
 import (
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"testing"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/stretchr/testify/assert"
 	networking "k8s.io/api/networking/v1"
