@@ -4,29 +4,19 @@ Kubernetes controller for NetworkPolicy resources for the [Amazon VPC CNI](https
 
 This controller resolves the pod addresses for the configured network policies and publishes them via the CustomResourceDefinition `policyendpoints.networking.k8s.aws` for the VPC CNI node agent to consume.
 
-📝 EKS Customers do not need to install this controller. Review the instructions in the [EKS User Guide]([[UG_LINK]]). EKS installs and manages it automatically. This cluster is for self managed clusters, such as [kops](https://kops.sigs.k8s.io) clusters.
-
+📝 EKS Customers do not need to install this controller. Review the instructions in the [EKS User Guide](https://docs.aws.amazon.com/eks/latest/userguide/[[network policy page name]].html). EKS installs and manages it automatically. This cluster is for self managed clusters, such as [kops](https://kops.sigs.k8s.io) clusters.
 
 ## Getting Started
-
-[[Does it require any configuration? Does it call AWS APIs? I don't think so.]]
 
 The [controller image](<<controller_image>>) is published to AWS ECR.
 The directory `config/default` contains a default configuration for deploying the controller. 
 
+The controller does not require any IAM policies. It does not make AWS API calls. 
+
 ### Prerequisites
 
-- Kubernetes Version - 1.21+
+- Kubernetes Version - 1.25+
 - Amazon VPC CNI version - 1.14.0+
-- [[Nothing IAM Needed?]]
-
-### Install 
-
-`make deploy`
-
-### Configuration
-
-## Version Compatibility 
 
 ## Security Disclosures 
 
