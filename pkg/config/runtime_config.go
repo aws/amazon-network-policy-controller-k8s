@@ -8,6 +8,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/spf13/pflag"
 )
@@ -82,13 +84,22 @@ func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 
 // BuildRuntimeOptions builds the options for the controller runtime based on config
 func BuildRuntimeOptions(rtCfg RuntimeConfig, scheme *runtime.Scheme) ctrl.Options {
+	// if DefaultNamespaces in Options is not set, cache will watch for all namespaces
+	cacheOptions := cache.Options{}
+	if rtCfg.WatchNamespace != corev1.NamespaceAll {
+		cacheOptions = cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				rtCfg.WatchNamespace: {},
+			},
+		}
+	}
 	return ctrl.Options{
 		Scheme:                  scheme,
-		MetricsBindAddress:      rtCfg.MetricsBindAddress,
+		Metrics:                 metricsserver.Options{BindAddress: rtCfg.MetricsBindAddress},
 		HealthProbeBindAddress:  rtCfg.HealthProbeBindAddress,
 		LeaderElection:          rtCfg.EnableLeaderElection,
 		LeaderElectionID:        rtCfg.LeaderElectionID,
 		LeaderElectionNamespace: rtCfg.LeaderElectionNamespace,
-		Namespace:               rtCfg.WatchNamespace,
+		Cache:                   cacheOptions,
 	}
 }
