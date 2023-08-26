@@ -16,8 +16,8 @@
 IMG ?= public.ecr.aws/eks/amazon-network-policy-controller-k8s:v0.5.2
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.26.1
-# PLATFORMS define the target platforms for the controller image be build
-PLATFORMS ?= linux/amd64,linux/arm64
+# ARCHS define the target architectures for the controller image be build
+ARCHS ?= amd64 arm64
 # IMG_SBOM defines the SBOM media type to use, we set to none since ECR doesn't support it yet
 IMG_SBOM ?= none
 
@@ -175,7 +175,9 @@ BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonro
 GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3
 .PHONY: docker-buildx
 docker-buildx: test
-	docker buildx build --platform=$(PLATFORMS) -t $(IMG)-$(GOARCH) --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $(GOARCH) --load .
+	for platform in $(ARCHS); do \
+		docker buildx build --platform=linux/$$platform -t $(IMG)-$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
+	done
 
 # Check formatting of source code files without modification.
 check-format: FORMAT_FLAGS = -l
