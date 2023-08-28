@@ -1,15 +1,14 @@
 ## Amazon Network Policy Controller for Kubernetes
 
-Kubernetes controller for NetworkPolicy resources for the [Amazon VPC CNI](https://github.com/aws/amazon-vpc-cni-k8s/).
+Controller for Kubernetes NetworkPolicy resources.
 
-This controller resolves the pod addresses for the configured network policies and publishes them via the CustomResourceDefinition `policyendpoints.networking.k8s.aws` for the VPC CNI node agent to consume.
-
-📝 EKS Customers do not need to install this controller. Review the instructions in the [EKS User Guide](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html). EKS installs and manages it automatically. This controller is for self managed clusters, such as [kops](https://kops.sigs.k8s.io) clusters.
+Network Policy Controller resolves the configured network policies and publishes the resolved endpoints via Custom CRD (`PolicyEndpoints`) resource.
 
 ## Getting Started
 
-The controller image is published to AWS ECR.
-The directory `config/default` contains a default configuration for deploying the controller. 
+When you create a new Amazon EKS cluster, the network policy controller is automatically installed on the EKS control plane. It actively monitors the creation of network policies within your cluster and reconciles policy endpoints. Subsequently, the controller instructs the node agent to create or update eBPF programs on the node by publishing pod information through the policy endpoints. Network policy controller configures policies for pods in parallel to pod provisioning, until then new pods will come up with default allow policy. All ingress and egress traffic is allowed to and from the new pods until they are reconciled against the existing policies. To effectively manage network policies on self-managed Kubernetes clusters, you need to deploy a network policy controller on a node.
+
+Stay tuned for additional instructions for installing Network Policy Controller on nodes. The controller image is published to AWS ECR.
 
 The controller does not require any IAM policies. It does not make AWS API calls. 
 
