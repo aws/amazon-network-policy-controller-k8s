@@ -8,7 +8,7 @@ This controller resolves the pod addresses for the configured network policies a
 
 ## Getting Started
 
-The [controller image](<<controller_image>>) is published to AWS ECR.
+The controller image is published to AWS ECR.
 The directory `config/default` contains a default configuration for deploying the controller. 
 
 The controller does not require any IAM policies. It does not make AWS API calls. 
