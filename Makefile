@@ -21,6 +21,9 @@ ARCHS ?= amd64 arm64
 # IMG_SBOM defines the SBOM media type to use, we set to none since ECR doesn't support it yet
 IMG_SBOM ?= none
 
+# Disable the control plane network policy controller
+DISABLE_CP_NETWORK_POLICY_CONTROLLER=false
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -189,3 +192,19 @@ format:       ## Format all Go source code files.
 	  -type f \
 	  -name '*.go' \
 	  -print0 | sort -z | xargs -0 -- goimports $(or $(FORMAT_FLAGS),-w) | wc -l | bc)
+
+run-cyclonus-test: ## Runs cyclonus tests on an existing cluster. Call with CLUSTER_NAME=<name of your cluster> to execute cyclonus test
+ifdef CLUSTER_NAME
+	CLUSTER_NAME=$(CLUSTER_NAME) DISABLE_CP_NETWORK_POLICY_CONTROLLER=$(DISABLE_CP_NETWORK_POLICY_CONTROLLER) ./scripts/run-cyclonus-tests.sh
+else
+	@echo 'Pass CLUSTER_NAME parameter'
+endif
+
+./PHONY: deploy-controller-on-dataplane
+deploy-controller-on-dataplane: ## Deploys the Network Policy controller on an existing cluster. Optionally call with AMAZON_NP_CONTROLLER=<Image URI> to update the image
+	./scripts/update-controller-image-dataplane.sh AMAZON_NP_CONTROLLER=$(AMAZON_NP_CONTROLLER)
+
+./PHONY: deploy-and-test
+deploy-and-test: ## Deploys the Network Policy controller on an existing cluster and runs cyclonus tests. Call with CLUSTER_NAME=<name of the cluster> and AMAZON_NP_CONTROLLER=<Image URI> 
+	$(MAKE) deploy-controller-on-dataplane AMAZON_NP_CONTROLLER=$(AMAZON_NP_CONTROLLER)
+	$(MAKE) run-cyclonus-test CLUSTER_NAME=$(CLUSTER_NAME) DISABLE_CP_NETWORK_POLICY_CONTROLLER=true
