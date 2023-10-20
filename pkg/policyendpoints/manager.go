@@ -23,6 +23,10 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
+const (
+	LabelKeyToParentPolicyName = "networking.k8s.io/parent-network-policy-name"
+)
+
 type PolicyEndpointsManager interface {
 	Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error
 	Cleanup(ctx context.Context, policy *networking.NetworkPolicy) error
@@ -297,6 +301,9 @@ func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPol
 					BlockOwnerDeletion: &blockOwnerDeletion,
 					Controller:         &isController,
 				},
+			},
+			Labels: map[string]string{
+				LabelKeyToParentPolicyName: policy.Name,
 			},
 		},
 		Spec: policyinfo.PolicyEndpointSpec{
