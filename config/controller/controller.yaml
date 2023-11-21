@@ -18,6 +18,8 @@ spec:
     spec:
       containers:
         - image: controller:latest
+          args:
+            - --enable-configmap-check=false
           name: controller
           securityContext:
             allowPrivilegeEscalation: false
