@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Image URL to use all building/pushing image targets
-IMG ?= public.ecr.aws/eks/amazon-network-policy-controller-k8s:v1.0.0
+IMG ?= public.ecr.aws/eks/amazon-network-policy-controller-k8s:v1.0.2
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.26.1
 # ARCHS define the target architectures for the controller image be build
@@ -173,7 +173,7 @@ $(MOCKGEN): $(LOCALBIN)
 	test -s $(MOCKGEN) || GOBIN=$(LOCALBIN) go install github.com/golang/mock/mockgen@v1.6.0
 
 GOARCH=amd64
-BUILD_IMAGE=public.ecr.aws/docker/library/golang:1.20.6
+BUILD_IMAGE=public.ecr.aws/docker/library/golang:1.21.4
 BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
 GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3
 .PHONY: docker-buildx
