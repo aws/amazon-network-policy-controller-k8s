@@ -21,6 +21,13 @@ type EndpointsResolver interface {
 		[]policyinfo.PodEndpoint, error)
 }
 
+type RuleType string
+
+const (
+	Ingress RuleType = "ingress"
+	Egress  RuleType = "egress"
+)
+
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
 func NewEndpointsResolver(k8sClient client.Client, logger logr.Logger) *defaultEndpointsResolver {
 	return &defaultEndpointsResolver{
@@ -64,7 +71,7 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 			ingressEndpoints = append(ingressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
 			continue
 		}
-		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports)
+		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, Ingress)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to resolve ingress network peers")
 		}
@@ -82,7 +89,7 @@ func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, p
 			egressEndpoints = append(egressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
 			continue
 		}
-		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports)
+		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, Egress)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to resolve egress network peers")
 		}
@@ -149,7 +156,7 @@ func (r *defaultEndpointsResolver) getAllowAllNetworkPeers(ports []networking.Ne
 }
 
 func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, policy *networking.NetworkPolicy,
-	peers []networking.NetworkPolicyPeer, ports []networking.NetworkPolicyPort) ([]policyinfo.EndpointInfo, error) {
+	peers []networking.NetworkPolicyPeer, ports []networking.NetworkPolicyPort, ruleType RuleType) ([]policyinfo.EndpointInfo, error) {
 	var networkPeers []policyinfo.EndpointInfo
 	for _, peer := range peers {
 		if peer.IPBlock != nil {
@@ -185,12 +192,62 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 		} else {
 			namespaces = []string{policy.Namespace}
 		}
-		r.logger.V(1).Info("Namespaces for network peers resolution", "list", namespaces, "policy", k8s.NamespacedName(policy))
-		for _, ns := range namespaces {
-			networkPeers = append(networkPeers, r.getMatchingPodAddresses(ctx, peer.PodSelector, ns, ports)...)
+
+		var portsToApply []policyinfo.Port
+		// populate the policy applied targets' ports
+		if ruleType == Ingress {
+			portsToApply = r.getIngressRulesPorts(ctx, policy.Namespace, &policy.Spec.PodSelector, ports)
 		}
+
+		for _, ns := range namespaces {
+			networkPeers = append(networkPeers, r.getMatchingPodAddresses(ctx, peer.PodSelector, ns, portsToApply, ports, ruleType)...)
+		}
+
 	}
 	return networkPeers, nil
+}
+
+func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, policyNamespace string, policyPodSelector *metav1.LabelSelector, ports []networking.NetworkPolicyPort) []policyinfo.Port {
+	podList := &corev1.PodList{}
+	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+		LabelSelector: r.createPodLabelSelector(policyPodSelector),
+		Namespace:     policyNamespace,
+	}); err != nil {
+		r.logger.Info("Unable to List Pods", "err", err)
+		return nil
+	}
+
+	r.logger.V(2).Info("list pods for ingress", "podList", *podList, "namespace", policyNamespace, "selector", *policyPodSelector)
+	var portList []policyinfo.Port
+	for _, pod := range podList.Items {
+		portList = append(portList, r.getPortList(pod, ports)...)
+		r.logger.Info("got ingress port", "port", portList, "pod", pod)
+	}
+
+	return portList
+}
+
+func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {
+	var portList []policyinfo.Port
+	for _, port := range ports {
+		var portPtr *int32
+		if port.Port != nil {
+			portVal, _, err := k8s.LookupContainerPortAndName(&pod, *port.Port, *port.Protocol)
+			if err != nil {
+				// Isolate the pod for the port if we are unable to resolve the named port
+				r.logger.Info("Unable to lookup container port", "pod", k8s.NamespacedName(&pod),
+					"port", *port.Port, "err", err)
+				continue
+			}
+			portPtr = &portVal
+		}
+		portList = append(portList, policyinfo.Port{
+			Protocol: port.Protocol,
+			Port:     portPtr,
+			EndPort:  port.EndPort,
+		})
+	}
+	return portList
 }
 
 func (r *defaultEndpointsResolver) resolveServiceClusterIPs(ctx context.Context, peers []networking.NetworkPolicyPeer, policyNamespace string,
@@ -257,8 +314,43 @@ func (r *defaultEndpointsResolver) resolveNamespaces(ctx context.Context, ls *me
 }
 
 func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, ls *metav1.LabelSelector, namespace string,
-	ports []networking.NetworkPolicyPort) []policyinfo.EndpointInfo {
+	policyPorts []policyinfo.Port, ports []networking.NetworkPolicyPort, rule RuleType) []policyinfo.EndpointInfo {
 	var addresses []policyinfo.EndpointInfo
+
+	podList := &corev1.PodList{}
+	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+		LabelSelector: r.createPodLabelSelector(ls),
+		Namespace:     namespace,
+	}); err != nil {
+		r.logger.Info("Unable to List Pods", "err", err)
+		return nil
+	}
+	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", ls.String())
+	for _, pod := range podList.Items {
+		podIP := k8s.GetPodIP(&pod)
+		if len(podIP) == 0 {
+			r.logger.V(1).Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
+			continue
+		}
+		portList := r.getPortList(pod, ports)
+		if len(ports) != len(portList) && len(portList) == 0 {
+			continue
+		}
+		addresses = append(addresses, policyinfo.EndpointInfo{
+			CIDR: policyinfo.NetworkAddress(podIP),
+			Ports: func(ruleType RuleType) []policyinfo.Port {
+				if ruleType == Ingress {
+					return policyPorts
+				}
+				return portList
+			}(rule),
+		})
+	}
+
+	return addresses
+}
+
+func (r *defaultEndpointsResolver) createPodLabelSelector(ls *metav1.LabelSelector) labels.Selector {
 	var podSelector labels.Selector
 	if ls == nil {
 		podSelector = labels.Everything()
@@ -269,50 +361,7 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 			return nil
 		}
 	}
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
-		LabelSelector: podSelector,
-		Namespace:     namespace,
-	}); err != nil {
-		r.logger.Info("Unable to List Pods", "err", err)
-		return nil
-	}
-	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", podSelector.String())
-	for _, pod := range podList.Items {
-		podIP := k8s.GetPodIP(&pod)
-		if len(podIP) == 0 {
-			r.logger.V(1).Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
-			continue
-		}
-		var portList []policyinfo.Port
-		for _, port := range ports {
-			var portPtr *int32
-			if port.Port != nil {
-				portVal, _, err := k8s.LookupContainerPortAndName(&pod, *port.Port, *port.Protocol)
-				if err != nil {
-					// Isolate the pod for the port if we are unable to resolve the named port
-					r.logger.Info("Unable to lookup container port", "pod", k8s.NamespacedName(&pod),
-						"port", *port.Port, "err", err)
-					continue
-				}
-				portPtr = &portVal
-			}
-			portList = append(portList, policyinfo.Port{
-				Protocol: port.Protocol,
-				Port:     portPtr,
-				EndPort:  port.EndPort,
-			})
-		}
-		if len(ports) != len(portList) && len(portList) == 0 {
-			continue
-		}
-		addresses = append(addresses, policyinfo.EndpointInfo{
-			CIDR:  policyinfo.NetworkAddress(podIP),
-			Ports: portList,
-		})
-	}
-
-	return addresses
+	return podSelector
 }
 
 // getMatchingServiceClusterIPs returns the clusterIPs of the services with service.spec.Selector matching the pod selector
