@@ -47,7 +47,7 @@ func (t *defaultPolicyTracker) UpdatePolicy(policy *networking.NetworkPolicy) {
 	}
 }
 
-// RemovePolicy removes the given policy from the policy tracker during during deletion
+// RemovePolicy removes the given policy from the policy tracker during deletion
 func (t *defaultPolicyTracker) RemovePolicy(policy *networking.NetworkPolicy) {
 	t.logger.V(1).Info("remove from tracking", "policy", k8s.NamespacedName(policy))
 	t.namespacedPolicies.Delete(k8s.NamespacedName(policy))

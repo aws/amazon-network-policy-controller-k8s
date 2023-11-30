@@ -86,6 +86,8 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 	enableNetworkPolicyController := true
+	setupLog.Info("Checking arg for enabling CM", "ConfigMapEnabled", controllerCFG.EnableConfigMapCheck)
+	setupLog.Info("Checking arg for PE chunk size", "PEChunkSize", controllerCFG.EndpointChunkSize)
 	if controllerCFG.EnableConfigMapCheck {
 		var cancelFn context.CancelFunc
 		ctx, cancelFn = context.WithCancel(ctx)
