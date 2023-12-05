@@ -21,13 +21,6 @@ type EndpointsResolver interface {
 		[]policyinfo.PodEndpoint, error)
 }
 
-type RuleType string
-
-const (
-	Ingress RuleType = "ingress"
-	Egress  RuleType = "egress"
-)
-
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
 func NewEndpointsResolver(k8sClient client.Client, logger logr.Logger) *defaultEndpointsResolver {
 	return &defaultEndpointsResolver{
@@ -71,7 +64,7 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 			ingressEndpoints = append(ingressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
 			continue
 		}
-		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, Ingress)
+		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to resolve ingress network peers")
 		}
@@ -89,7 +82,7 @@ func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, p
 			egressEndpoints = append(egressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
 			continue
 		}
-		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, Egress)
+		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, networking.PolicyTypeEgress)
 		if err != nil {
 			return nil, errors.Wrap(err, "unable to resolve egress network peers")
 		}
@@ -156,7 +149,7 @@ func (r *defaultEndpointsResolver) getAllowAllNetworkPeers(ports []networking.Ne
 }
 
 func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, policy *networking.NetworkPolicy,
-	peers []networking.NetworkPolicyPeer, ports []networking.NetworkPolicyPort, ruleType RuleType) ([]policyinfo.EndpointInfo, error) {
+	peers []networking.NetworkPolicyPeer, ports []networking.NetworkPolicyPort, policyType networking.PolicyType) ([]policyinfo.EndpointInfo, error) {
 	var networkPeers []policyinfo.EndpointInfo
 	for _, peer := range peers {
 		if peer.IPBlock != nil {
@@ -195,12 +188,12 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 
 		var portsToApply []policyinfo.Port
 		// populate the policy applied targets' ports
-		if ruleType == Ingress {
+		if policyType == networking.PolicyTypeIngress {
 			portsToApply = r.getIngressRulesPorts(ctx, policy.Namespace, &policy.Spec.PodSelector, ports)
 		}
 
 		for _, ns := range namespaces {
-			networkPeers = append(networkPeers, r.getMatchingPodAddresses(ctx, peer.PodSelector, ns, portsToApply, ports, ruleType)...)
+			networkPeers = append(networkPeers, r.getMatchingPodAddresses(ctx, peer.PodSelector, ns, portsToApply, ports, policyType)...)
 		}
 
 	}
@@ -314,7 +307,7 @@ func (r *defaultEndpointsResolver) resolveNamespaces(ctx context.Context, ls *me
 }
 
 func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, ls *metav1.LabelSelector, namespace string,
-	policyPorts []policyinfo.Port, ports []networking.NetworkPolicyPort, rule RuleType) []policyinfo.EndpointInfo {
+	policyPorts []policyinfo.Port, ports []networking.NetworkPolicyPort, rule networking.PolicyType) []policyinfo.EndpointInfo {
 	var addresses []policyinfo.EndpointInfo
 
 	podList := &corev1.PodList{}
@@ -338,8 +331,8 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 		}
 		addresses = append(addresses, policyinfo.EndpointInfo{
 			CIDR: policyinfo.NetworkAddress(podIP),
-			Ports: func(ruleType RuleType) []policyinfo.Port {
-				if ruleType == Ingress {
+			Ports: func(policyType networking.PolicyType) []policyinfo.Port {
+				if policyType == networking.PolicyTypeIngress {
 					return policyPorts
 				}
 				return portList
