@@ -146,7 +146,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	// packing new egress rules
 	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(policy, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
 	// packing new pod selector
-	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectors(policy, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(policy, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
 
 	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
 	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
@@ -297,6 +297,12 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 			policyEndpointChanged = true
 		}
 
+		// the controller resolves the reconciled network poolicy rules and pods, now use them to update existing policy endpoints
+		// if incoming ingress, egress and pod endpoints are all empty, we override the existing endpoints and mark them as deletion candidates
+		// else if either one of incoming slices is not empty, we update the existing endpoints by replacing them, and append them to modified endpoints
+		// finally if no condition matched, we simply append the existing endpoints to the modified endpoints.
+		// TODO: simplify the process since we are overriding the existing endpoints anyway. we may futher refresh all policy endpoints as long as
+		// we have a safe way to make node agent aware of the replacement.
 		if len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0 {
 			existingPolicyEndpoints[i].Spec.Ingress = ingEndpointList
 			existingPolicyEndpoints[i].Spec.Egress = egEndpointList
@@ -324,7 +330,9 @@ func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkP
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	ingressList := maps.Keys(rulesMap)
-	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{createPolicyEndpoints, modifiedEndpoints, potentialDeletes} {
+
+	// try to fill existing polciy endpoints first and then new ones if needed
+	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -366,7 +374,9 @@ func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPo
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	egressList := maps.Keys(rulesMap)
-	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{createPolicyEndpoints, modifiedEndpoints, potentialDeletes} {
+
+	// try to fill existing polciy endpoints first and then new ones if needed
+	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -398,9 +408,9 @@ func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPo
 	return createPolicyEndpoints, doNotDelete
 }
 
-// packingPodSelectors iterates over pod selectors across available policy endpoints and required pod selector changes.
+// packingPodSelectorEndpoints iterates over pod selectors across available policy endpoints and required pod selector changes.
 // it returns the pod selectors packed in policy endpoints and a set of policy endpoints that need to be kept.
-func (m *policyEndpointsManager) packingPodSelectors(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.NetworkPolicy,
 	psList []policyinfo.PodEndpoint,
 	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
 
@@ -408,7 +418,8 @@ func (m *policyEndpointsManager) packingPodSelectors(policy *networking.NetworkP
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 
-	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{createPolicyEndpoints, modifiedEndpoints, potentialDeletes} {
+	// try to fill existing polciy endpoints first and then new ones if needed
+	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx

@@ -86,8 +86,11 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 	enableNetworkPolicyController := true
-	setupLog.Info("Checking arg for enabling CM", "ConfigMapEnabled", controllerCFG.EnableConfigMapCheck)
-	setupLog.Info("Checking arg for PE chunk size", "PEChunkSize", controllerCFG.EndpointChunkSize)
+	setupLog.Info("Checking args for enabling CM", "ConfigMapEnabled", controllerCFG.EnableConfigMapCheck)
+	setupLog.Info("Checking args for PE chunk size", "PEChunkSize", controllerCFG.EndpointChunkSize)
+	setupLog.Info("Checking args for policy batch time", "NPBatchTime", controllerCFG.PodUpdateBatchPeriodDuration)
+	setupLog.Info("Checking args for reconciler count", "ReconcilerCount", controllerCFG.MaxConcurrentReconciles)
+
 	if controllerCFG.EnableConfigMapCheck {
 		var cancelFn context.CancelFunc
 		ctx, cancelFn = context.WithCancel(ctx)
