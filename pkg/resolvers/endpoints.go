@@ -188,6 +188,7 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 
 		var portsToApply []policyinfo.Port
 		// populate the policy applied targets' ports
+		// only populate ports for Ingress and from network policy namespaces as destination ports
 		if policyType == networking.PolicyTypeIngress {
 			portsToApply = r.getIngressRulesPorts(ctx, policy.Namespace, &policy.Spec.PodSelector, ports)
 		}
