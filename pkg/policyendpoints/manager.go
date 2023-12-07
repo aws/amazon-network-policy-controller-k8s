@@ -240,8 +240,8 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-// processExistingPolicyEndpoints processes the existing policies with the coming network policy changes
-// it returned required rules and pod selector changes, and potential modifications and deletions on policy endpoints.
+// processExistingPolicyEndpoints processes the existing policies with the incoming network policy changes
+// it returns required rules and pod selector changes, and potential modifications and deletions on policy endpoints.
 func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	policy *networking.NetworkPolicy,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
@@ -267,6 +267,13 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	// Go over the existing endpoints, and remove entries that are no longer needed
 	var modifiedEndpoints []policyinfo.PolicyEndpoint
 	var potentialDeletes []policyinfo.PolicyEndpoint
+
+	// We loop through existing PolicyEndpoint resources for the current Network Policy and purge any stale endpoints across Ingress,
+	// Egress and PodSelector endpoints. Once a PolicyEndpoint resource is updated/processed we place it in modifiedEndpoints list
+	// and if a particular PolicyEndpoint resource is purged of all the endpoints, we mark it as a potential delete candidate.
+	// We then start bin-packing any new Ingress, Egress, PodSelector endpoints across the existing PolicyEndpoint resources placed
+	// in modified and potential delete candidate lists. We only create new PolicyEndpoint resources if we exhaust all the existing resources.
+	// Any PolicyEndpoint resources placed in potentialDelete bucket that aren't utilized at the end of the binpacking flow will be permanently deleted.
 	for i := range existingPolicyEndpoints {
 		ingEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Ingress))
 		for _, ingRule := range existingPolicyEndpoints[i].Spec.Ingress {
@@ -297,12 +304,6 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 			policyEndpointChanged = true
 		}
 
-		// the controller resolves the reconciled network poolicy rules and pods, now use them to update existing policy endpoints
-		// if incoming ingress, egress and pod endpoints are all empty, we override the existing endpoints and mark them as deletion candidates
-		// else if either one of incoming slices is not empty, we update the existing endpoints by replacing them, and append them to modified endpoints
-		// finally if no condition matched, we simply append the existing endpoints to the modified endpoints.
-		// TODO: simplify the process since we are overriding the existing endpoints anyway. we may futher refresh all policy endpoints as long as
-		// we have a safe way to make node agent aware of the replacement.
 		if len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0 {
 			existingPolicyEndpoints[i].Spec.Ingress = ingEndpointList
 			existingPolicyEndpoints[i].Spec.Egress = egEndpointList
@@ -369,7 +370,6 @@ func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkP
 func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPolicy,
 	rulesMap map[string]policyinfo.EndpointInfo,
 	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
-	// ingressRuleChunks := lo.Chunk(maps.Keys(ingressEndpointsMap), m.endpointChunkSize)
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
@@ -397,7 +397,7 @@ func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPo
 		}
 	}
 
-	// if the incoming ingress rules haven't been all processed yet, we need new PE(s).
+	// if the incoming egress rules haven't been all processed yet, we need new PE(s).
 	if chunkEndIdx < len(egressList) {
 		egressRuleChunks := lo.Chunk(egressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range egressRuleChunks {
