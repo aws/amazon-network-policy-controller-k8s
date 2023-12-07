@@ -197,7 +197,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 		serviceListCalls []serviceListCall
 	}
 	protocolTCP := corev1.ProtocolTCP
-	protocolUDP := corev1.ProtocolTCP
+	protocolUDP := corev1.ProtocolUDP
 	port80 := int32(80)
 	intOrStrPort80 := intstr.FromInt(int(port80))
 	intOrStrPortName := intstr.FromString("port-name")
@@ -636,5 +636,223 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 				assert.Equal(t, tt.wantPodEndpoints, podEndpoints)
 			}
 		})
+	}
+}
+
+func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
+	protocolTCP := corev1.ProtocolTCP
+	port80 := int32(80)
+	port8080 := int32(8080)
+	port9090 := int32(9090)
+
+	srcPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod1",
+			Namespace: "src",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "pod1",
+					Ports: []corev1.ContainerPort{
+						{
+							ContainerPort: port80,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "test-port",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "1.0.0.1",
+		},
+	}
+	dstPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod2",
+			Namespace: "dst",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "pod2",
+					Ports: []corev1.ContainerPort{
+						{
+							ContainerPort: port8080,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "test-port",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "1.0.0.2",
+		},
+	}
+
+	policy := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "netpol",
+			Namespace: "dst",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress, networking.PolicyTypeEgress},
+			Ingress: []networking.NetworkPolicyIngressRule{
+				{
+					From: []networking.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "src",
+								},
+							},
+						},
+					},
+					Ports: []networking.NetworkPolicyPort{
+						{
+							Protocol: &protocolTCP,
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "test-port"},
+						},
+					},
+				},
+			},
+			Egress: []networking.NetworkPolicyEgressRule{
+				{
+					To: []networking.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "src",
+								},
+							},
+						},
+					},
+					Ports: []networking.NetworkPolicyPort{
+						{
+							Protocol: &protocolTCP,
+							Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: port8080},
+							EndPort:  &port9090,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mock_client.NewMockClient(ctrl)
+	resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+
+	var ingressEndpoints []policyinfo.EndpointInfo
+	var egressEndpoints []policyinfo.EndpointInfo
+	ctx := context.TODO()
+	for _, rule := range policy.Spec.Ingress {
+		namespaces := []corev1.Namespace{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "src",
+				},
+			},
+		}
+
+		nsList := &corev1.NamespaceList{}
+		podList := &corev1.PodList{}
+
+		gomock.InOrder(
+			mockClient.EXPECT().List(gomock.Any(), nsList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, nsList *corev1.NamespaceList, opts ...client.ListOption) error {
+					for _, ns := range namespaces {
+						nsList.Items = append(nsList.Items, *(ns.DeepCopy()))
+					}
+					return nil
+				},
+			),
+			// getting ingress endpoint calls listing pods with dst NS first
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPod}
+					return nil
+				},
+			),
+			// getting ingress endpoint calls then listing pods with src NS for CIDRs
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{srcPod}
+					return nil
+				},
+			),
+		)
+		if rule.From == nil {
+			ingressEndpoints = append(ingressEndpoints, resolver.getAllowAllNetworkPeers(rule.Ports)...)
+			continue
+		}
+		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
+		assert.NoError(t, err)
+		ingressEndpoints = append(ingressEndpoints, resolvedPeers...)
+
+		dstNS := corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "dst",
+			},
+		}
+
+		svcList := &corev1.ServiceList{}
+		gomock.InOrder(
+			mockClient.EXPECT().List(gomock.Any(), nsList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, nsList *corev1.NamespaceList, opts ...client.ListOption) error {
+					nsList.Items = []corev1.Namespace{dstNS}
+					return nil
+				},
+			),
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPod}
+					return nil
+				},
+			),
+			mockClient.EXPECT().List(gomock.Any(), nsList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, nsList *corev1.NamespaceList, opts ...client.ListOption) error {
+					nsList.Items = []corev1.Namespace{dstNS}
+					return nil
+				},
+			),
+			mockClient.EXPECT().List(gomock.Any(), svcList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, svcList *corev1.ServiceList, opts ...client.ListOption) error {
+					svcList.Items = []corev1.Service{}
+					return nil
+				},
+			),
+		)
+
+		for _, rule := range policy.Spec.Egress {
+			resolver.logger.V(1).Info("computing egress addresses", "peers", rule.To)
+			if rule.To == nil {
+				egressEndpoints = append(egressEndpoints, resolver.getAllowAllNetworkPeers(rule.Ports)...)
+				continue
+			}
+			resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, networking.PolicyTypeEgress)
+			assert.NoError(t, err)
+			resolvedClusterIPs, err := resolver.resolveServiceClusterIPs(ctx, rule.To, policy.Namespace, rule.Ports)
+			assert.NoError(t, err)
+			egressEndpoints = append(egressEndpoints, resolvedPeers...)
+			egressEndpoints = append(egressEndpoints, resolvedClusterIPs...)
+		}
+	}
+
+	for _, ingPE := range ingressEndpoints {
+		assert.Equal(t, srcPod.Status.PodIP, string(ingPE.CIDR))
+		assert.Equal(t, dstPod.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
+	}
+
+	for _, egPE := range egressEndpoints {
+		assert.Equal(t, dstPod.Status.PodIP, string(egPE.CIDR))
+		assert.Equal(t, dstPod.Spec.Containers[0].Ports[0].ContainerPort, *egPE.Ports[0].Port)
+		assert.Equal(t, policy.Spec.Egress[0].Ports[0].Port.IntVal, *egPE.Ports[0].Port)
+		assert.Equal(t, *policy.Spec.Egress[0].Ports[0].EndPort, *egPE.Ports[0].EndPort)
 	}
 }
