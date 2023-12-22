@@ -122,7 +122,7 @@ func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manage
 func (r *policyReconciler) reconcile(ctx context.Context, request reconcile.Request) error {
 	policy := &networking.NetworkPolicy{}
 	if err := r.k8sClient.Get(ctx, request.NamespacedName, policy); err != nil {
-		r.logger.V(1).Info("Unable to get policy", "resource", policy, "err", err)
+		r.logger.Info("Unable to get policy", "resource", policy, "err", err)
 		return client.IgnoreNotFound(err)
 	}
 	if !policy.DeletionTimestamp.IsZero() {

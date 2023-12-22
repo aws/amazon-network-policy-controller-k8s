@@ -167,6 +167,7 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 			// However, in this case we are not able to resolve any of the ports from the CIDR list alone. In this
 			// case we do not add the CIDR to the list of resolved peers to prevent allow all ports.
 			if len(ports) != 0 && len(portList) == 0 {
+				r.logger.Info("Couldn't resolve ports from given CIDR list and will skip this rule", "peer", peer)
 				continue
 			}
 			networkPeers = append(networkPeers, policyinfo.EndpointInfo{
@@ -215,7 +216,7 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	var portList []policyinfo.Port
 	for _, pod := range podList.Items {
 		portList = append(portList, r.getPortList(pod, ports)...)
-		r.logger.Info("got ingress port", "port", portList, "pod", pod)
+		r.logger.Info("Got ingress port", "port", portList, "pod", pod)
 	}
 
 	return portList
@@ -260,7 +261,7 @@ func (r *defaultEndpointsResolver) resolveServiceClusterIPs(ctx context.Context,
 				return nil, err
 			}
 		}
-		r.logger.V(1).Info("Namespaces for service clusterIP lookup", "list", namespaces)
+		r.logger.Info("Populated namespaces for service clusterIP lookup", "list", namespaces)
 		for _, ns := range namespaces {
 			networkPeers = append(networkPeers, r.getMatchingServiceClusterIPs(ctx, peer.PodSelector, ns, ports)...)
 		}
@@ -323,11 +324,12 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	for _, pod := range podList.Items {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) == 0 {
-			r.logger.V(1).Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
+			r.logger.Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
 			continue
 		}
 		portList := r.getPortList(pod, ports)
 		if len(ports) != len(portList) && len(portList) == 0 {
+			r.logger.Info("Couldn't get matched port list from the pod", "pod", k8s.NamespacedName(&pod), "expectedPorts", ports)
 			continue
 		}
 		addresses = append(addresses, policyinfo.EndpointInfo{
@@ -382,16 +384,24 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 		return nil
 	}
 	for _, svc := range svcList.Items {
-		if k8s.IsServiceHeadless(&svc) || !svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
+		// do not add headless services to policy endpoints
+		if k8s.IsServiceHeadless(&svc) {
+			r.logger.Info("skipping headless service when populating EndpointInfo", "serviceName", svc.Name, "serviceNamespace", svc.Namespace)
 			continue
 		}
+		// do not add services if their pod selector is not matching with the pod selector defined in the network policy
+		if !svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
+			r.logger.Info("skipping pod selector mismatched service when populating EndpointInfo", "serviceName", svc.Name, "serviceNamespace", svc.Namespace, "expectedPS", svcSelector)
+			continue
+		}
+
 		var portList []policyinfo.Port
 		for _, port := range ports {
 			var portPtr *int32
 			if port.Port != nil {
 				portVal, err := r.getMatchingServicePort(ctx, &svc, port.Port, *port.Protocol)
 				if err != nil {
-					r.logger.V(1).Info("Unable to lookup service port", "err", err)
+					r.logger.Info("Unable to lookup service port", "err", err)
 					continue
 				}
 				portPtr = &portVal
@@ -403,6 +413,7 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 			})
 		}
 		if len(ports) != len(portList) && len(portList) == 0 {
+			r.logger.Info("Couldn't find matching port for the service", "service", k8s.NamespacedName(&svc))
 			continue
 		}
 		networkPeers = append(networkPeers, policyinfo.EndpointInfo{
@@ -420,7 +431,7 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(ctx context.Context, s
 	if portVal, err := k8s.LookupServiceListenPort(svc, *port, protocol); err == nil {
 		return portVal, nil
 	} else {
-		r.logger.V(1).Info("Unable to lookup service port", "err", err)
+		r.logger.Info("Unable to lookup service port", "err", err)
 	}
 	// List pods matching the svc selector
 	podSelector, err := metav1.LabelSelectorAsSelector(metav1.SetAsLabelSelector(svc.Spec.Selector))
@@ -438,8 +449,9 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(ctx context.Context, s
 	for i := range podList.Items {
 		if portVal, err := k8s.LookupListenPortFromPodSpec(svc, &podList.Items[i], *port, protocol); err == nil {
 			return portVal, nil
+		} else {
+			r.logger.Info("The pod doesn't have port matched", "err", err, "pod", podList.Items[i])
 		}
-		break
 	}
-	return 0, errors.Errorf("unable to find matching service listen port %s", port.String())
+	return 0, errors.Errorf("unable to find matching service listen port %s for service %s", port.String(), k8s.NamespacedName(svc))
 }

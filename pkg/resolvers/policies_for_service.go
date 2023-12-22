@@ -17,7 +17,7 @@ import (
 // getReferredPoliciesForService returns the list of policies that refer to the service.
 func (r *defaultPolicyReferenceResolver) getReferredPoliciesForService(ctx context.Context, svc, svcOld *corev1.Service) ([]networking.NetworkPolicy, error) {
 	if k8s.IsServiceHeadless(svc) {
-		r.logger.V(1).Info("Ignoring headless service", "svc", k8s.NamespacedName(svc))
+		r.logger.Info("Ignoring headless service", "svc", k8s.NamespacedName(svc))
 		return nil, nil
 	}
 	policiesWithEgressRules := r.policyTracker.GetPoliciesWithEgressRules()
