@@ -830,7 +830,6 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 		)
 
 		for _, rule := range policy.Spec.Egress {
-			resolver.logger.V(1).Info("computing egress addresses", "peers", rule.To)
 			if rule.To == nil {
 				egressEndpoints = append(egressEndpoints, resolver.getAllowAllNetworkPeers(rule.Ports)...)
 				continue
