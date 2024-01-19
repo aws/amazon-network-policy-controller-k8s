@@ -87,11 +87,11 @@ function install_network_policy_helm(){
     fi
 
     echo "Updating annotations and labels on existing resources"
-    for kind in daemonSet clusterRole clusterRoleBinding serviceAccount; do
-      echo "setting annotations and labels on $kind/aws-node"
-      kubectl -n kube-system annotate --overwrite $kind aws-node meta.helm.sh/release-name=aws-vpc-cni || echo "Unable to annotate $kind/aws-node"
-      kubectl -n kube-system annotate --overwrite $kind aws-node meta.helm.sh/release-namespace=kube-system || echo "Unable to annotate $kind/aws-node"
-      kubectl -n kube-system label --overwrite $kind aws-node app.kubernetes.io/managed-by=Helm || echo "Unable to label $kind/aws-node"
+    resources=("daemonSet/aws-node" "clusterRole/aws-node" "clusterRoleBinding/aws-node" "serviceAccount/aws-node" "configmap/amazon-vpc-cni") 
+    for kind in ${resources[@]}; do
+      echo "setting annotations and labels on $kind"
+      kubectl -n kube-system annotate --overwrite $kind meta.helm.sh/release-name=aws-vpc-cni meta.helm.sh/release-namespace=kube-system || echo "Unable to annotate $kind"
+      kubectl -n kube-system label --overwrite $kind app.kubernetes.io/managed-by=Helm || echo "Unable to label $kind"
     done
 
     echo "Installing/Updating the aws-vpc-cni helm chart with enableNetworkPolicy=true"
