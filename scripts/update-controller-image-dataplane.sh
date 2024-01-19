@@ -3,7 +3,7 @@
 
 # Parameters:
 # KUBECONFIG: path to the kubeconfig file, default ~/.kube/config
-# AMAZON_NP_CONTROLLER: node agent image
+# AMAZON_NP_CONTROLLER: Custom network policy controller image
 
 set -e
 DIR=$(cd "$(dirname "$0")"; pwd)
@@ -13,7 +13,7 @@ kubectl apply -k config/default
 
 if [[ ! -z $AMAZON_NP_CONTROLLER ]];then
     echo "Setting the Controller Image: $AMAZON_NP_CONTROLLER"
-    kubectl set image deployment.v1.apps/amazon-network-policy-controller-k8s controller=$AMAZON_NP_CONTROLLER
+    kubectl set image -n kube-system deployment.v1.apps/amazon-network-policy-controller-k8s controller=$AMAZON_NP_CONTROLLER
 fi
 
 echo "Restarting the Controller"
