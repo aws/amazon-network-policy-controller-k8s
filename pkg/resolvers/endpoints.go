@@ -2,15 +2,19 @@ package resolvers
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	"golang.org/x/exp/maps"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -216,10 +220,14 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	var portList []policyinfo.Port
 	for _, pod := range podList.Items {
 		portList = append(portList, r.getPortList(pod, ports)...)
-		r.logger.Info("Got ingress port", "port", portList, "pod", pod)
+		r.logger.Info("Got ingress port from pod", "pod", types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}.String())
 	}
 
-	return portList
+	// since we pull ports from dst pods, we should deduplicate them
+	deduppedPorts := dedupPorts(portList)
+	r.logger.Info("Got ingress ports from dst pods", "port", deduppedPorts)
+
+	return deduppedPorts
 }
 
 func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {
@@ -454,4 +462,26 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(ctx context.Context, s
 		}
 	}
 	return 0, errors.Errorf("unable to find matching service listen port %s for service %s", port.String(), k8s.NamespacedName(svc))
+}
+
+func dedupPorts(policyPorts []policyinfo.Port) []policyinfo.Port {
+	ports := make(map[string]policyinfo.Port)
+	for _, port := range policyPorts {
+		prot, p, ep := "", "", ""
+		if port.Protocol != nil {
+			prot = string(*port.Protocol)
+		}
+		if port.Port != nil {
+			p = strconv.FormatInt(int64(*port.Port), 10)
+		}
+		if port.EndPort != nil {
+			ep = strconv.FormatInt(int64(*port.EndPort), 10)
+		}
+
+		ports[fmt.Sprintf("%s@%s@%s", prot, p, ep)] = port
+	}
+	if len(ports) > 0 {
+		return maps.Values(ports)
+	}
+	return nil
 }
