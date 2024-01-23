@@ -668,7 +668,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			PodIP: "1.0.0.1",
 		},
 	}
-	dstPod := corev1.Pod{
+	dstPodOne := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod2",
 			Namespace: "dst",
@@ -689,6 +689,29 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 		},
 		Status: corev1.PodStatus{
 			PodIP: "1.0.0.2",
+		},
+	}
+	dstPodTwo := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod3",
+			Namespace: "dst",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "pod3",
+					Ports: []corev1.ContainerPort{
+						{
+							ContainerPort: port8080,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "test-port",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "1.0.0.3",
 		},
 	}
 
@@ -775,7 +798,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			// getting ingress endpoint calls listing pods with dst NS first
 			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
 				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
-					podList.Items = []corev1.Pod{dstPod}
+					podList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
 					return nil
 				},
 			),
@@ -811,7 +834,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			),
 			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
 				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
-					podList.Items = []corev1.Pod{dstPod}
+					podList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
 					return nil
 				},
 			),
@@ -845,12 +868,13 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 
 	for _, ingPE := range ingressEndpoints {
 		assert.Equal(t, srcPod.Status.PodIP, string(ingPE.CIDR))
-		assert.Equal(t, dstPod.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
+		assert.Equal(t, dstPodOne.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
+		assert.Equal(t, 1, len(ingPE.Ports))
 	}
 
 	for _, egPE := range egressEndpoints {
-		assert.Equal(t, dstPod.Status.PodIP, string(egPE.CIDR))
-		assert.Equal(t, dstPod.Spec.Containers[0].Ports[0].ContainerPort, *egPE.Ports[0].Port)
+		assert.True(t, string(egPE.CIDR) == dstPodOne.Status.PodIP || string(egPE.CIDR) == dstPodTwo.Status.PodIP)
+		assert.Equal(t, dstPodOne.Spec.Containers[0].Ports[0].ContainerPort, *egPE.Ports[0].Port)
 		assert.Equal(t, policy.Spec.Egress[0].Ports[0].Port.IntVal, *egPE.Ports[0].Port)
 		assert.Equal(t, *policy.Spec.Egress[0].Ports[0].EndPort, *egPE.Ports[0].EndPort)
 	}
