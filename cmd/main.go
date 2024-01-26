@@ -116,7 +116,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	policyEndpointsManager := policyendpoints.NewPolicyEndpointsManager(mgr.GetClient(),
+	policyEndpointsManager := policyendpoints.NewPolicyEndpointsManager(ctx, mgr.GetClient(),
 		controllerCFG.EndpointChunkSize, ctrl.Log.WithName("endpoints-manager"))
 	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
 	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,

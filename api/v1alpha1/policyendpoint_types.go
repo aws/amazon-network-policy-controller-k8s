@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"github.com/awslabs/operatorpkg/status"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -105,7 +106,7 @@ type PolicyEndpointStatus struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// +optional
-	Conditions []PolicyEndpointCondition `json:"conditions,omitempty"`
+	Conditions []status.Condition `json:"conditions,omitempty"`
 }
 
 type PolicyEndpointConditionType string
@@ -114,26 +115,6 @@ const (
 	Packed  PolicyEndpointConditionType = "PackedPolicyEndpoint"
 	Updated PolicyEndpointConditionType = "PatchedPolicyEndpoint"
 )
-
-// PolicyEndpointCondition describes the state of a PolicyEndpoint at a certain point.
-// For example, binpacking PE slices should be updated as a condition change
-type PolicyEndpointCondition struct {
-	// Type of PolicyEndpoint condition.
-	// +optional
-	Type PolicyEndpointConditionType `json:"type"`
-	// Status of the condition, one of True, False, Unknown.
-	// +optional
-	Status corev1.ConditionStatus `json:"status"`
-	// Last time the condition transitioned from one status to another.
-	// +optional
-	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
-	// The reason for the condition's last transition.
-	// +optional
-	Reason string `json:"reason,omitempty"`
-	// A human readable message indicating details about the transition.
-	// +optional
-	Message string `json:"message,omitempty"`
-}
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
@@ -158,4 +139,16 @@ type PolicyEndpointList struct {
 
 func init() {
 	SchemeBuilder.Register(&PolicyEndpoint{}, &PolicyEndpointList{})
+}
+
+func (s *PolicyEndpoint) GetConditions() []status.Condition {
+	return []status.Condition(s.Status.Conditions)
+}
+
+func (s *PolicyEndpoint) SetConditions(conds []status.Condition) {
+	s.Status.Conditions = conds
+}
+
+func (s *PolicyEndpoint) StatusConditions() status.ConditionSet {
+	return status.NewReadyConditions().For(s)
 }

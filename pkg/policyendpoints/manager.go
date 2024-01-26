@@ -12,7 +12,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"github.com/samber/lo"
-	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,9 +32,10 @@ type PolicyEndpointsManager interface {
 }
 
 // NewPolicyEndpointsManager constructs a new policyEndpointsManager
-func NewPolicyEndpointsManager(k8sClient client.Client, endpointChunkSize int, logger logr.Logger) *policyEndpointsManager {
+func NewPolicyEndpointsManager(ctx context.Context, k8sClient client.Client, endpointChunkSize int, logger logr.Logger) *policyEndpointsManager {
 	endpointsResolver := resolvers.NewEndpointsResolver(k8sClient, logger.WithName("endpoints-resolver"))
 	return &policyEndpointsManager{
+		ctx:               ctx,
 		k8sClient:         k8sClient,
 		endpointsResolver: endpointsResolver,
 		endpointChunkSize: endpointChunkSize,
@@ -59,6 +59,7 @@ const (
 var _ PolicyEndpointsManager = (*policyEndpointsManager)(nil)
 
 type policyEndpointsManager struct {
+	ctx               context.Context
 	k8sClient         client.Client
 	endpointsResolver resolvers.EndpointsResolver
 	endpointChunkSize int
@@ -88,6 +89,12 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		if err := m.k8sClient.Create(ctx, &policyEndpoint); err != nil {
 			return err
 		}
+		// initialize the PE's conditions
+		conditions.CreatePEInitCondition(m.ctx,
+			m.k8sClient,
+			types.NamespacedName{Name: policyEndpoint.Name, Namespace: policyEndpoint.Namespace},
+			m.logger,
+		)
 		m.logger.Info("Created policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
 
@@ -107,11 +114,13 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 				peId,
 				m.logger,
 				policyinfo.Updated,
-				corev1.ConditionFalse,
+				metav1.ConditionFalse,
 				reasonPatching,
 				fmt.Sprintf("patching policy endpoint failed: %s", err.Error()),
+				// keep condition history for error states
+				true,
 			); cErr != nil {
-				m.logger.Error(cErr, "Adding PE patch failure condition updates to PE failed", "PENamespacedName", peId)
+				m.logger.Error(cErr, "Adding PE patch failure condition updates to PE failed", "PENamespacedName", peId, "RV", policyEndpoint.ResourceVersion)
 			}
 			return err
 		}
@@ -122,9 +131,11 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 				peId,
 				m.logger,
 				policyinfo.Packed,
-				corev1.ConditionTrue,
+				metav1.ConditionTrue,
 				reasonBinPacking,
-				fmt.Sprintf("binpacked network policy endpoint slices on Ingress - %t, Egress - %t, PodSelector - %t", packed&ingBit>>ingressShift == 1, packed&egBit>>egressShift == 1, packed&psBit>>psShift == 1),
+				fmt.Sprintf("binpacked network policy endpoint slices on Ingress - %t, Egress - %t, PodSelector - %t with RV %s", packed&ingBit>>ingressShift == 1, packed&egBit>>egressShift == 1, packed&psBit>>psShift == 1, policyEndpoint.ResourceVersion),
+				// don't keep packing states history. if required, this can be changed to true later.
+				false,
 			); err != nil {
 				m.logger.Error(err, "Adding bingpacking condition updates to PE failed", "PENamespacedName", peId)
 			}
