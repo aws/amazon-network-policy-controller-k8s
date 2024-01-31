@@ -224,10 +224,10 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	}
 
 	// since we pull ports from dst pods, we should deduplicate them
-	deduppedPorts := dedupPorts(portList)
-	r.logger.Info("Got ingress ports from dst pods", "port", deduppedPorts)
+	dedupedPorts := dedupPorts(portList)
+	r.logger.Info("Got ingress ports from dst pods", "port", dedupedPorts)
 
-	return deduppedPorts
+	return dedupedPorts
 }
 
 func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {
