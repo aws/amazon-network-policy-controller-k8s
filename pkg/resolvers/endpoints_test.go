@@ -658,7 +658,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 						{
 							ContainerPort: port80,
 							Protocol:      corev1.ProtocolTCP,
-							Name:          "test-port",
+							Name:          "src-port",
 						},
 					},
 				},
@@ -668,6 +668,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			PodIP: "1.0.0.1",
 		},
 	}
+
 	dstPodOne := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod2",
@@ -681,7 +682,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 						{
 							ContainerPort: port8080,
 							Protocol:      corev1.ProtocolTCP,
-							Name:          "test-port",
+							Name:          "dst-port",
 						},
 					},
 				},
@@ -715,6 +716,12 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 		},
 	}
 
+	portsMap := map[string]int32{
+		"src-port": port80,
+		"dst-port": port8080,
+	}
+
+	// the policy is applied to dst namespace on dst pod
 	policy := &networking.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "netpol",
@@ -737,7 +744,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 					Ports: []networking.NetworkPolicyPort{
 						{
 							Protocol: &protocolTCP,
-							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "test-port"},
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "dst-port"},
 						},
 					},
 				},
@@ -756,7 +763,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 					Ports: []networking.NetworkPolicyPort{
 						{
 							Protocol: &protocolTCP,
-							Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: port8080},
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "src-port"},
 							EndPort:  &port9090,
 						},
 					},
@@ -799,6 +806,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
 				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
 					podList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
+					podList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
 					return nil
 				},
 			),
@@ -820,7 +828,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 
 		dstNS := corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "dst",
+				Name: "src",
 			},
 		}
 
@@ -834,6 +842,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			),
 			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
 				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
 					podList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
 					return nil
 				},
@@ -866,8 +875,13 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 		}
 	}
 
+	// the policy is applied to dst namespace
+	// the ingress should have cidr from src pod and ports from dst pod
+	// the egress should have cidr from src pod and ports from src pod
 	for _, ingPE := range ingressEndpoints {
 		assert.Equal(t, srcPod.Status.PodIP, string(ingPE.CIDR))
+		assert.Equal(t, dstPodOne.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
+		assert.Equal(t, 1, len(ingPE.Ports))
 		assert.Equal(t, dstPodOne.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
 		assert.Equal(t, 1, len(ingPE.Ports))
 	}
@@ -875,7 +889,9 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 	for _, egPE := range egressEndpoints {
 		assert.True(t, string(egPE.CIDR) == dstPodOne.Status.PodIP || string(egPE.CIDR) == dstPodTwo.Status.PodIP)
 		assert.Equal(t, dstPodOne.Spec.Containers[0].Ports[0].ContainerPort, *egPE.Ports[0].Port)
-		assert.Equal(t, policy.Spec.Egress[0].Ports[0].Port.IntVal, *egPE.Ports[0].Port)
+		assert.Equal(t, srcPod.Status.PodIP, string(egPE.CIDR))
+		assert.Equal(t, srcPod.Spec.Containers[0].Ports[0].ContainerPort, *egPE.Ports[0].Port)
+		assert.Equal(t, portsMap[policy.Spec.Egress[0].Ports[0].Port.StrVal], *egPE.Ports[0].Port)
 		assert.Equal(t, *policy.Spec.Egress[0].Ports[0].EndPort, *egPE.Ports[0].EndPort)
 	}
 }
