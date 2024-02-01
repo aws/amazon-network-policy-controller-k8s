@@ -1,0 +1,58 @@
+
+replicaCount: 2
+
+image:
+  repository: public.ecr.aws/eks/amazon-network-policy-controller-k8s
+  tag: v1.0.4
+  pullPolicy: IfNotPresent
+  override: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  name: ""
+  annotations: {}
+
+enableConfigMapCheck: true
+endpointChunkSize: ""
+maxConcurrentReconciles: ""
+podUpdateBatchPeriodDuration: ""
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 25%
+
+# Time period for the controller pod to do a graceful shutdown
+terminationGracePeriodSeconds: 10
+
+# Liveness probe configuration for the controller
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+# Readiness probe configuration for the controller
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+resources:
+  limits:
+    memory: 1Gi
+  requests:
+    memory: 30Mi
+    cpu: 0.3

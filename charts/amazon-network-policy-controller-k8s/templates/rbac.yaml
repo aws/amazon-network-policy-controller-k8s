@@ -1,0 +1,165 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - amazon-vpc-cni
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }}
+  name: {{ template "amazon-network-policy-controller.fullname" . }}-leader-election-role
+  namespace: {{ .Release.Namespace }}
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+- apiGroups:
+  - coordination.k8s.io
+  resourceNames:
+  - amazon-network-policy-controller-k8s
+  resources:
+  - leases
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }}
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.k8s.aws
+  resources:
+  - policyendpoints
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.aws
+  resources:
+  - policyendpoints/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - networking.k8s.aws
+  resources:
+  - policyendpoints/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }}
+  name: {{ template "amazon-network-policy-controller.fullname" . }}-rolebinding
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }}
+  name: {{ template "amazon-network-policy-controller.fullname" . }}-leader-election-rolebinding
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ template "amazon-network-policy-controller.fullname" . }}-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }} 
+  name: {{ template "amazon-network-policy-controller.fullname" . }}-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ template "amazon-network-policy-controller.fullname" . }}
+  namespace: {{ .Release.Namespace }}

@@ -1,0 +1,13 @@
+apiVersion: v2
+name: amazon-network-policy-controller-k8s
+version: 1.0.4
+appVersion: v1.0.4
+description: A Helm chart for Amazon Network Policy Controller K8s
+icon: https://raw.githubusercontent.com/aws/eks-charts/master/docs/logo/aws.png
+home: https://github.com/aws/amazon-network-policy-controller-k8s
+sources:
+  - https://github.com/aws/amazon-network-policy-controller-k8s
+keywords:
+  - eks
+  - networking
+  - network-policy

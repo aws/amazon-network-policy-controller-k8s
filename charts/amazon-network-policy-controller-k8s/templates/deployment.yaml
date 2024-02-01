@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "amazon-network-policy-controller.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "amazon-network-policy-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "amazon-network-policy-controller.selectorLabels" . | nindent 6 }}
+  {{- with .Values.updateStrategy }}
+  strategy:
+    {{ toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "amazon-network-policy-controller.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: {{ .Chart.Name }}
+        image: {{ include "amazon-network-policy-controller.image" . }}
+        args:
+          - --enable-configmap-check={{ .Values.enableConfigMapCheck }}
+          {{- if .Values.endpointChunkSize }}
+          - --endpoint-chunk-size={{ .Values.endpointChunkSize }}
+          {{- end }}
+          {{- if .Values.maxConcurrentReconciles }}
+          - --max-concurrent-reconciles={{ .Values.maxConcurrentReconciles }}
+          {{- end }}
+          {{- if .Values.podUpdateBatchPeriodDuration }}
+          - --pod-update-batch-period-duration={{ .Values.updateBatchPeriodDuration }}
+          {{- end }}
+        {{- with .Values.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}  
+        {{- with .Values.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+            {{- toYaml .Values.securityContext | nindent 10 }}
+        {{- with .Values.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      serviceAccountName: {{ include "amazon-network-policy-controller.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
