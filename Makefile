@@ -195,16 +195,16 @@ format:       ## Format all Go source code files.
 
 run-cyclonus-test: ## Runs cyclonus tests on an existing cluster. Call with CLUSTER_NAME=<name of your cluster> to execute cyclonus test
 ifdef CLUSTER_NAME
-	CLUSTER_NAME=$(CLUSTER_NAME) DISABLE_CP_NETWORK_POLICY_CONTROLLER=$(DISABLE_CP_NETWORK_POLICY_CONTROLLER) ./scripts/run-cyclonus-tests.sh
+	CLUSTER_NAME=$(CLUSTER_NAME) ./scripts/run-cyclonus-tests.sh
 else
 	@echo 'Pass CLUSTER_NAME parameter'
 endif
 
 ./PHONY: deploy-controller-on-dataplane
-deploy-controller-on-dataplane: ## Deploys the Network Policy controller on an existing cluster. Optionally call with AMAZON_NP_CONTROLLER=<Image URI> to update the image
-	./scripts/update-controller-image-dataplane.sh AMAZON_NP_CONTROLLER=$(AMAZON_NP_CONTROLLER)
+deploy-controller-on-dataplane: ## Deploys the Network Policy controller on an existing cluster. Optionally call with NP_CONTROLLER_IMAGE=<Image URI> to update the image
+	./scripts/deploy-controller-on-dataplane.sh NP_CONTROLLER_IMAGE=$(NP_CONTROLLER_IMAGE)
 
 ./PHONY: deploy-and-test
-deploy-and-test: ## Deploys the Network Policy controller on an existing cluster and runs cyclonus tests. Call with CLUSTER_NAME=<name of the cluster> and AMAZON_NP_CONTROLLER=<Image URI> 
-	$(MAKE) deploy-controller-on-dataplane AMAZON_NP_CONTROLLER=$(AMAZON_NP_CONTROLLER)
-	$(MAKE) run-cyclonus-test CLUSTER_NAME=$(CLUSTER_NAME) DISABLE_CP_NETWORK_POLICY_CONTROLLER=true
+deploy-and-test: ## Deploys the Network Policy controller on an existing cluster and runs cyclonus tests. Call with CLUSTER_NAME=<name of the cluster> and NP_CONTROLLER_IMAGE=<Image URI> 
+	$(MAKE) deploy-controller-on-dataplane NP_CONTROLLER_IMAGE=$(NP_CONTROLLER_IMAGE)
+	$(MAKE) run-cyclonus-test CLUSTER_NAME=$(CLUSTER_NAME)
