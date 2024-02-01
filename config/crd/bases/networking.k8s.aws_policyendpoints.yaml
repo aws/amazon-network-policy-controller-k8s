@@ -35,10 +35,6 @@ spec:
           spec:
             description: PolicyEndpointSpec defines the desired state of PolicyEndpoint
             properties:
-              allPodsInNamespace:
-                description: AllPodsInNameSpace is the boolean value indicating should
-                  all pods in the policy namespace be selected
-                type: boolean
               egress:
                 description: Egress is the list of egress rules containing resolved
                   network addresses
@@ -229,33 +225,6 @@ spec:
             type: object
           status:
             description: PolicyEndpointStatus defines the observed state of PolicyEndpoint
-            properties:
-              conditions:
-                items:
-                  description: PolicyEndpointCondition describes the state of a PolicyEndpoint
-                    at a certain point. For example, binpacking PE slices should be
-                    updated as a condition change
-                  properties:
-                    lastTransitionTime:
-                      description: Last time the condition transitioned from one status
-                        to another.
-                      format: date-time
-                      type: string
-                    message:
-                      description: A human readable message indicating details about
-                        the transition.
-                      type: string
-                    reason:
-                      description: The reason for the condition's last transition.
-                      type: string
-                    status:
-                      description: Status of the condition, one of True, False, Unknown.
-                      type: string
-                    type:
-                      description: Type of PolicyEndpoint condition.
-                      type: string
-                  type: object
-                type: array
             type: object
         type: object
     served: true
