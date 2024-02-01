@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 
 	"golang.org/x/exp/maps"
@@ -21,6 +22,8 @@ import (
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/conditions"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/conversions"
 )
 
 type PolicyEndpointsManager interface {
@@ -29,9 +32,10 @@ type PolicyEndpointsManager interface {
 }
 
 // NewPolicyEndpointsManager constructs a new policyEndpointsManager
-func NewPolicyEndpointsManager(k8sClient client.Client, endpointChunkSize int, logger logr.Logger) *policyEndpointsManager {
+func NewPolicyEndpointsManager(ctx context.Context, k8sClient client.Client, endpointChunkSize int, logger logr.Logger) *policyEndpointsManager {
 	endpointsResolver := resolvers.NewEndpointsResolver(k8sClient, logger.WithName("endpoints-resolver"))
 	return &policyEndpointsManager{
+		ctx:               ctx,
 		k8sClient:         k8sClient,
 		endpointsResolver: endpointsResolver,
 		endpointChunkSize: endpointChunkSize,
@@ -39,9 +43,23 @@ func NewPolicyEndpointsManager(k8sClient client.Client, endpointChunkSize int, l
 	}
 }
 
+const (
+	ingressShift = 2
+	egressShift  = 1
+	psShift      = 0
+
+	ingBit = 4
+	egBit  = 2
+	psBit  = 1
+
+	reasonBinPacking = "PEBinPacked"
+	reasonPatching   = "PEPatched"
+)
+
 var _ PolicyEndpointsManager = (*policyEndpointsManager)(nil)
 
 type policyEndpointsManager struct {
+	ctx               context.Context
 	k8sClient         client.Client
 	endpointsResolver resolvers.EndpointsResolver
 	endpointChunkSize int
@@ -60,12 +78,9 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		client.MatchingFields{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
 		return err
 	}
-	existingPolicyEndpoints := make([]policyinfo.PolicyEndpoint, 0, len(policyEndpointList.Items))
-	for _, policyEndpoint := range policyEndpointList.Items {
-		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
-	}
 
-	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
+	createList, updateList, deleteList, packed, err := m.computePolicyEndpoints(policy, policyEndpointList.Items, ingressRules, egressRules, podSelectorEndpoints)
+	m.logger.Info("the controller is packing PE rules", "Packed", conversions.IntToBool(packed))
 	if err != nil {
 		return err
 	}
@@ -74,22 +89,57 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		if err := m.k8sClient.Create(ctx, &policyEndpoint); err != nil {
 			return err
 		}
+		// initialize the PE's conditions
+		conditions.CreatePEInitCondition(m.ctx,
+			m.k8sClient,
+			types.NamespacedName{Name: policyEndpoint.Name, Namespace: policyEndpoint.Namespace},
+			m.logger,
+		)
 		m.logger.Info("Created policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
 
 	for _, policyEndpoint := range updateList {
 		oldRes := &policyinfo.PolicyEndpoint{}
-		if err := m.k8sClient.Get(ctx, k8s.NamespacedName(&policyEndpoint), oldRes); err != nil {
+		peId := k8s.NamespacedName(&policyEndpoint)
+		if err := m.k8sClient.Get(ctx, peId, oldRes); err != nil {
 			return err
 		}
 		if equality.Semantic.DeepEqual(oldRes.Spec, policyEndpoint.Spec) {
-			m.logger.V(1).Info("Policy endpoint already up to date", "id", k8s.NamespacedName(&policyEndpoint))
+			m.logger.V(1).Info("Policy endpoint already up to date", "id", peId)
 			continue
 		}
+
 		if err := m.k8sClient.Patch(ctx, &policyEndpoint, client.MergeFrom(oldRes)); err != nil {
+			if cErr := conditions.UpdatePEConditions(ctx, m.k8sClient,
+				peId,
+				m.logger,
+				policyinfo.Updated,
+				metav1.ConditionFalse,
+				reasonPatching,
+				fmt.Sprintf("patching policy endpoint failed: %s", err.Error()),
+				// keep condition history for error states
+				true,
+			); cErr != nil {
+				m.logger.Error(cErr, "Adding PE patch failure condition updates to PE failed", "PENamespacedName", peId, "RV", policyEndpoint.ResourceVersion)
+			}
 			return err
 		}
-		m.logger.Info("Updated policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
+		m.logger.Info("Updated policy endpoint", "id", peId)
+
+		if packed > 0 {
+			if err := conditions.UpdatePEConditions(ctx, m.k8sClient,
+				peId,
+				m.logger,
+				policyinfo.Packed,
+				metav1.ConditionTrue,
+				reasonBinPacking,
+				fmt.Sprintf("binpacked network policy endpoint slices on Ingress - %t, Egress - %t, PodSelector - %t with RV %s", packed&ingBit>>ingressShift == 1, packed&egBit>>egressShift == 1, packed&psBit>>psShift == 1, policyEndpoint.ResourceVersion),
+				// don't keep packing states history. if required, this can be changed to true later.
+				false,
+			); err != nil {
+				m.logger.Error(err, "Adding bingpacking condition updates to PE failed", "PENamespacedName", peId)
+			}
+		}
 	}
 
 	for _, policyEndpoint := range deleteList {
@@ -123,7 +173,7 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.NetworkPolicy,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
 	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint,
-	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, error) {
+	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, int, error) {
 
 	// Loop through ingressEndpoints, egressEndpoints and podSelectorEndpoints and put in map
 	// also populate them into policy endpoints
@@ -138,11 +188,11 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	var deletePolicyEndpoints []policyinfo.PolicyEndpoint
 
 	// packing new ingress rules
-	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(policy, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeleteIngress, ingPacked := m.packingIngressRules(policy, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
 	// packing new egress rules
-	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(policy, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeleteEgress, egPacked := m.packingEgressRules(policy, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
 	// packing new pod selector
-	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(policy, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeletePs, psPacked := m.packingPodSelectorEndpoints(policy, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
 
 	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
 	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
@@ -167,7 +217,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		}
 	}
 
-	return createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints, nil
+	return createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints, (conversions.BoolToint(ingPacked) << ingressShift) | (conversions.BoolToint(egPacked) << egressShift) | (conversions.BoolToint(psPacked) << psShift), nil
 }
 
 func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPolicy,
@@ -202,6 +252,13 @@ func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPol
 			Egress:       egressRules,
 		},
 	}
+
+	// if no pod selector is specified, the controller adds a boolean value true to AllPodsInNamespace
+	if policy.Spec.PodSelector.Size() == 0 {
+		m.logger.Info("Creating a new PE but requested NP doesn't have pod selector", "NPName", policy.Name, "NPNamespace", policy.Namespace)
+		policyEndpoint.Spec.AllPodsInNamespace = true
+	}
+
 	return policyEndpoint
 }
 
@@ -319,24 +376,32 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 // it returns the ingress rules packed in policy endpoints and a set of policy endpoints that need to be kept.
 func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkPolicy,
 	rulesMap map[string]policyinfo.EndpointInfo,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName], bool) {
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	ingressList := maps.Keys(rulesMap)
+
+	packed := false
 
 	// try to fill existing polciy endpoints first and then new ones if needed
 	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
+
 			// Instead of adding the entire chunk we should try to add to full the slice
-			if len(sliceToCheck[i].Spec.Ingress) < m.endpointChunkSize && chunkEndIdx < len(ingressList) {
+			// when new ingress rule list is greater than available spots in current non-empty PE rule's list, we do binpacking
+			spots := m.endpointChunkSize - len(sliceToCheck[i].Spec.Ingress)
+			packed = spots > 0 && len(sliceToCheck[i].Spec.Ingress) > 0 && spots < len(ingressList)
+
+			if spots > 0 && chunkEndIdx < len(ingressList) {
 				for len(sliceToCheck[i].Spec.Ingress)+(chunkEndIdx-chunkStartIdx+1) < m.endpointChunkSize && chunkEndIdx < len(ingressList)-1 {
 					chunkEndIdx++
 				}
 
 				sliceToCheck[i].Spec.Ingress = append(sliceToCheck[i].Spec.Ingress, m.getListOfEndpointInfoFromHash(lo.Slice(ingressList, chunkStartIdx, chunkEndIdx+1), rulesMap)...)
+
 				// move the end to next available index to prepare next appending
 				chunkEndIdx++
 			}
@@ -355,26 +420,33 @@ func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkP
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		}
 	}
-	return createPolicyEndpoints, doNotDelete
+	return createPolicyEndpoints, doNotDelete, packed
 }
 
 // packingEgressRules iterates over egress rules across available policy endpoints and required egress rule changes.
 // it returns the egress rules packed in policy endpoints and a set of policy endpoints that need to be kept.
 func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPolicy,
 	rulesMap map[string]policyinfo.EndpointInfo,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName], bool) {
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	egressList := maps.Keys(rulesMap)
+
+	packed := false
 
 	// try to fill existing polciy endpoints first and then new ones if needed
 	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
+
 			// Instead of adding the entire chunk we should try to add to full the slice
-			if len(sliceToCheck[i].Spec.Egress) < m.endpointChunkSize && chunkEndIdx < len(egressList) {
+			// when new egress rule list is greater than available spots in current non-empty PE rule's list, we do binpacking
+			spots := m.endpointChunkSize - len(sliceToCheck[i].Spec.Egress)
+			packed = spots > 0 && len(sliceToCheck[i].Spec.Egress) > 0 && spots < len(egressList)
+
+			if spots > 0 && chunkEndIdx < len(egressList) {
 				for len(sliceToCheck[i].Spec.Egress)+(chunkEndIdx-chunkStartIdx+1) < m.endpointChunkSize && chunkEndIdx < len(egressList)-1 {
 					chunkEndIdx++
 				}
@@ -398,26 +470,32 @@ func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPo
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		}
 	}
-	return createPolicyEndpoints, doNotDelete
+	return createPolicyEndpoints, doNotDelete, packed
 }
 
 // packingPodSelectorEndpoints iterates over pod selectors across available policy endpoints and required pod selector changes.
 // it returns the pod selectors packed in policy endpoints and a set of policy endpoints that need to be kept.
 func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.NetworkPolicy,
 	psList []policyinfo.PodEndpoint,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName], bool) {
 
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
+	packed := false
 
 	// try to fill existing polciy endpoints first and then new ones if needed
 	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
+
 			// Instead of adding the entire chunk we should try to add to full the slice
-			if len(sliceToCheck[i].Spec.PodSelectorEndpoints) < m.endpointChunkSize && chunkEndIdx < len(psList) {
+			// when new pods list is greater than available spots in current non-empty PS list, we do binpacking
+			spots := m.endpointChunkSize - len(sliceToCheck[i].Spec.PodSelectorEndpoints)
+			packed = spots > 0 && len(sliceToCheck[i].Spec.PodSelectorEndpoints) > 0 && spots < len(psList)
+
+			if spots > 0 && chunkEndIdx < len(psList) {
 				for len(sliceToCheck[i].Spec.PodSelectorEndpoints)+(chunkEndIdx-chunkStartIdx+1) < m.endpointChunkSize && chunkEndIdx < len(psList)-1 {
 					chunkEndIdx++
 				}
@@ -441,5 +519,5 @@ func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		}
 	}
-	return createPolicyEndpoints, doNotDelete
+	return createPolicyEndpoints, doNotDelete, packed
 }

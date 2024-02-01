@@ -1,3 +1,5 @@
+github.com/awslabs/operatorpkg v0.0.0-20231211224023-fce5f0fa8592 h1:LSaLHzJ4IMZZLgVIx/2YIcvUCIAaE5OqLhjWzdwF060=
+github.com/awslabs/operatorpkg v0.0.0-20231211224023-fce5f0fa8592/go.mod h1:kqgbtyanB/ObfvsSUdGZOk1f3K807kvoibKoKX0wMK4=
 github.com/benbjohnson/clock v1.1.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
