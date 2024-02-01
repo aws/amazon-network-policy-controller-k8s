@@ -93,46 +93,12 @@ type PolicyEndpointSpec struct {
 
 	// Egress is the list of egress rules containing resolved network addresses
 	Egress []EndpointInfo `json:"egress,omitempty"`
-
-	// AllPodsInNameSpace is the boolean value indicating should all pods in the policy namespace be selected
-	// +optional
-	AllPodsInNamespace bool `json:"allPodsInNamespace,omitempty"`
 }
 
 // PolicyEndpointStatus defines the observed state of PolicyEndpoint
 type PolicyEndpointStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-
-	// +optional
-	Conditions []PolicyEndpointCondition `json:"conditions,omitempty"`
-}
-
-type PolicyEndpointConditionType string
-
-const (
-	Packed  PolicyEndpointConditionType = "PackedPolicyEndpoint"
-	Updated PolicyEndpointConditionType = "PatchedPolicyEndpoint"
-)
-
-// PolicyEndpointCondition describes the state of a PolicyEndpoint at a certain point.
-// For example, binpacking PE slices should be updated as a condition change
-type PolicyEndpointCondition struct {
-	// Type of PolicyEndpoint condition.
-	// +optional
-	Type PolicyEndpointConditionType `json:"type"`
-	// Status of the condition, one of True, False, Unknown.
-	// +optional
-	Status corev1.ConditionStatus `json:"status"`
-	// Last time the condition transitioned from one status to another.
-	// +optional
-	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
-	// The reason for the condition's last transition.
-	// +optional
-	Reason string `json:"reason,omitempty"`
-	// A human readable message indicating details about the transition.
-	// +optional
-	Message string `json:"message,omitempty"`
 }
 
 //+kubebuilder:object:root=true
