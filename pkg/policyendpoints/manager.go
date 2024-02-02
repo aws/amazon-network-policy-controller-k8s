@@ -167,7 +167,37 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		}
 	}
 
-	return createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints, nil
+	return m.processPolicyEndpoints(createPolicyEndpoints), m.processPolicyEndpoints(updatePolicyEndpoints), deletePolicyEndpoints, nil
+}
+
+func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyEndpoint) []policyinfo.PolicyEndpoint {
+	var newPEs []policyinfo.PolicyEndpoint
+	for _, pe := range pes {
+		pe.Spec.Ingress = combineRulesEndpoints(pe.Spec.Ingress)
+		pe.Spec.Egress = combineRulesEndpoints(pe.Spec.Egress)
+		newPEs = append(newPEs, pe)
+	}
+	m.logger.Info("manager processed policy endpoints to consolidate rules", "preLen", len(pes), "postLen", len(newPEs), "newPEs", newPEs)
+	return newPEs
+}
+
+// the controller should consolidate the ingress endpoints and put entries to one CIDR if they belong to a same cidr
+func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
+	combinedMap := make(map[string]policyinfo.EndpointInfo)
+	for _, iep := range ingressEndpoints {
+		if _, ok := combinedMap[string(iep.CIDR)]; ok {
+			tempIEP := combinedMap[string(iep.CIDR)]
+			tempIEP.Ports = append(combinedMap[string(iep.CIDR)].Ports, iep.Ports...)
+			tempIEP.Except = append(combinedMap[string(iep.CIDR)].Except, iep.Except...)
+			combinedMap[string(iep.CIDR)] = tempIEP
+		} else {
+			combinedMap[string(iep.CIDR)] = iep
+		}
+	}
+	if len(combinedMap) > 0 {
+		return maps.Values(combinedMap)
+	}
+	return nil
 }
 
 func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPolicy,
