@@ -181,7 +181,7 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 	return newPEs
 }
 
-// the controller should consolidate the ingress endpoints and put entries to one CIDR if they belong to a same cidr
+// the controller should consolidate the ingress and egress endpoints and put entries to one CIDR if they belong to a same CIDR
 func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
 	combinedMap := make(map[string]policyinfo.EndpointInfo)
 	for _, iep := range ingressEndpoints {

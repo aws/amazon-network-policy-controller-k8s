@@ -9,6 +9,7 @@ import (
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 )
@@ -493,4 +494,62 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_processPolicyEndpoints(t *testing.T) {
+	m := &policyEndpointsManager{
+		logger: zap.New(),
+	}
+
+	p80 := int32(80)
+	p8080 := int32(8080)
+	pTCP := corev1.ProtocolTCP
+	pUDP := corev1.ProtocolUDP
+
+	pes := m.processPolicyEndpoints([]policyinfo.PolicyEndpoint{
+		{
+			Spec: policyinfo.PolicyEndpointSpec{
+				Ingress: []policyinfo.EndpointInfo{
+					{
+						CIDR: "1.2.3.4",
+						Ports: []policyinfo.Port{
+							{Port: &p80, Protocol: &pTCP},
+						},
+					},
+					{
+						CIDR: "1.2.3.4",
+						Ports: []policyinfo.Port{
+							{Port: &p8080, Protocol: &pTCP},
+						},
+					},
+					{
+						CIDR: "1.2.3.4",
+						Ports: []policyinfo.Port{
+							{Protocol: &pUDP},
+						},
+					},
+				},
+				Egress: []policyinfo.EndpointInfo{
+					{
+						CIDR: "1.2.3.5",
+						Ports: []policyinfo.Port{
+							{Port: &p80, Protocol: &pTCP},
+						},
+					},
+					{
+						CIDR: "1.2.3.5",
+						Ports: []policyinfo.Port{
+							{Port: &p8080, Protocol: &pTCP},
+						},
+					},
+				},
+			},
+		},
+	})
+	assert.Equal(t, 1, len(pes[0].Spec.Ingress))
+	assert.Equal(t, 1, len(pes[0].Spec.Egress))
+	assert.Equal(t, "1.2.3.4", string(pes[0].Spec.Ingress[0].CIDR))
+	assert.Equal(t, "1.2.3.5", string(pes[0].Spec.Egress[0].CIDR))
+	assert.Equal(t, 3, len(pes[0].Spec.Ingress[0].Ports))
+	assert.Equal(t, 2, len(pes[0].Spec.Egress[0].Ports))
 }
