@@ -20,6 +20,7 @@ import (
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/prometheus"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
@@ -51,6 +52,7 @@ type policyEndpointsManager struct {
 func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error {
 	ingressRules, egressRules, podSelectorEndpoints, err := m.endpointsResolver.Resolve(ctx, policy)
 	if err != nil {
+		prometheus.ResolveNetworkPolicyEndpointsErrCnt.Inc()
 		return err
 	}
 
@@ -107,6 +109,7 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 	if err := m.k8sClient.List(ctx, policyEndpointList,
 		client.InNamespace(policy.Namespace),
 		client.MatchingLabels{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
+		prometheus.CleanupNetworkPolicyEndpointsErrCnt.Inc()
 		return errors.Wrap(err, "unable to list policyendpoints")
 	}
 	for _, policyEndpoint := range policyEndpointList.Items {
