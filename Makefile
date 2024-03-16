@@ -172,8 +172,8 @@ mockgen: $(MOCKGEN)
 $(MOCKGEN): $(LOCALBIN)
 	test -s $(MOCKGEN) || GOBIN=$(LOCALBIN) go install github.com/golang/mock/mockgen@v1.6.0
 
-GOARCH=amd64
-BUILD_IMAGE=public.ecr.aws/docker/library/golang:1.21.5
+GO_IMAGE_TAG=$(shell cat .go-version)
+BUILD_IMAGE=public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
 BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
 GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3
 .PHONY: docker-buildx
