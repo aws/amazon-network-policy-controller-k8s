@@ -107,15 +107,17 @@ func (r *defaultEndpointsResolver) computePodSelectorEndpoints(ctx context.Conte
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to get pod selector")
 	}
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+
+	podList, err := r.getNonHostNetworkPodList(ctx, &client.ListOptions{
 		LabelSelector: podSelector,
 		Namespace:     policy.Namespace,
-	}); err != nil {
+	})
+
+	if err != nil {
 		r.logger.Info("Unable to List Pods", "err", err)
 		return nil, err
 	}
-	for _, pod := range podList.Items {
+	for _, pod := range podList {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) > 0 {
 			podEndpoints = append(podEndpoints, policyinfo.PodEndpoint{
@@ -200,18 +202,19 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 }
 
 func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, policyNamespace string, policyPodSelector *metav1.LabelSelector, ports []networking.NetworkPolicyPort) []policyinfo.Port {
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+	podList, err := r.getNonHostNetworkPodList(ctx, &client.ListOptions{
 		LabelSelector: r.createPodLabelSelector(policyPodSelector),
 		Namespace:     policyNamespace,
-	}); err != nil {
+	})
+
+	if err != nil {
 		r.logger.Info("Unable to List Pods", "err", err)
 		return nil
 	}
 
-	r.logger.V(2).Info("list pods for ingress", "podList", *podList, "namespace", policyNamespace, "selector", *policyPodSelector)
+	r.logger.V(2).Info("list pods for ingress", "podList", podList, "namespace", policyNamespace, "selector", *policyPodSelector)
 	var portList []policyinfo.Port
-	for _, pod := range podList.Items {
+	for _, pod := range podList {
 		portList = append(portList, r.getPortList(pod, ports)...)
 		r.logger.Info("Got ingress port from pod", "pod", types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}.String())
 	}
@@ -326,17 +329,18 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	}
 
 	// populate src pods for ingress and dst pods for egress
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+	podList, err := r.getNonHostNetworkPodList(ctx, &client.ListOptions{
 		LabelSelector: r.createPodLabelSelector(ls),
 		Namespace:     namespace,
-	}); err != nil {
+	})
+	if err != nil {
 		r.logger.Info("Unable to List Pods", "err", err)
 		return nil
 	}
-	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", ls.String())
 
-	for _, pod := range podList.Items {
+	r.logger.V(1).Info("Got pods for label selector", "count", len(podList), "selector", ls.String())
+
+	for _, pod := range podList {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) == 0 {
 			r.logger.Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
@@ -452,19 +456,21 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(ctx context.Context, s
 	if err != nil {
 		return 0, err
 	}
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+
+	podList, err := r.getNonHostNetworkPodList(ctx, &client.ListOptions{
 		LabelSelector: podSelector,
 		Namespace:     svc.Namespace,
-	}); err != nil {
+	})
+	if err != nil {
 		r.logger.Info("Unable to List Pods", "err", err)
 		return 0, err
 	}
-	for i := range podList.Items {
-		if portVal, err := k8s.LookupListenPortFromPodSpec(svc, &podList.Items[i], *port, protocol); err == nil {
+
+	for i := range podList {
+		if portVal, err := k8s.LookupListenPortFromPodSpec(svc, &podList[i], *port, protocol); err == nil {
 			return portVal, nil
 		} else {
-			r.logger.Info("The pod doesn't have port matched", "err", err, "pod", podList.Items[i])
+			r.logger.Info("The pod doesn't have port matched", "err", err, "pod", podList[i])
 		}
 	}
 	return 0, errors.Errorf("unable to find matching service listen port %s for service %s", port.String(), k8s.NamespacedName(svc))
@@ -490,4 +496,23 @@ func dedupPorts(policyPorts []policyinfo.Port) []policyinfo.Port {
 		return maps.Values(ports)
 	}
 	return nil
+}
+
+func (r *defaultEndpointsResolver) getNonHostNetworkPodList(ctx context.Context, opts client.ListOption) ([]corev1.Pod, error) {
+	podList := &corev1.PodList{}
+	var pods []corev1.Pod
+	err := r.k8sClient.List(ctx, podList, opts)
+	if err != nil {
+		r.logger.Info("Unable to List Pods", "err", err)
+	} else {
+		for _, pod := range podList.Items {
+			if !pod.Spec.HostNetwork {
+				pods = append(pods, pod)
+			} else {
+				r.logger.Info("skipping host network pod", "pod", k8s.NamespacedName(&pod))
+			}
+		}
+	}
+
+	return pods, err
 }

@@ -251,6 +251,24 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			},
 		},
 	}
+	ingressPolicyOnHostNetwork := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "host-network-policy",
+			Namespace: "ns",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			Ingress: []networking.NetworkPolicyIngressRule{
+				{
+					From: []networking.NetworkPolicyPeer{
+						{
+							PodSelector: &metav1.LabelSelector{},
+						},
+					},
+				},
+			},
+		},
+	}
 	pod1 := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod1",
@@ -276,6 +294,18 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			Annotations: map[string]string{
 				"vpc.amazonaws.com/pod-ips": "1.0.0.3",
 			},
+		},
+	}
+	podHostNetwork := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-host-network",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				"vpc.amazonaws.com/pod-ips": "1.0.0.4",
+			},
+		},
+		Spec: corev1.PodSpec{
+			HostNetwork: true,
 		},
 	}
 	podNoIP := corev1.Pod{
@@ -324,6 +354,23 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			wantPodEndpoints: []policyinfo.PodEndpoint{
 				{PodIP: "1.0.0.1", Name: "pod1", Namespace: "ns"},
 				{PodIP: "1.0.0.3", Name: "pod3", Namespace: "ns"},
+			},
+		},
+		{
+			name: "host network pods should be ignored",
+			args: args{
+				netpol: ingressPolicyOnHostNetwork,
+				podListCalls: []podListCall{
+					{
+						pods: []corev1.Pod{pod1, podHostNetwork},
+					},
+				},
+			},
+			wantIngressEndpoints: []policyinfo.EndpointInfo{
+				{CIDR: "1.0.0.1"},
+			},
+			wantPodEndpoints: []policyinfo.PodEndpoint{
+				{PodIP: "1.0.0.1", Name: "pod1", Namespace: "ns"},
 			},
 		},
 		{
