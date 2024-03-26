@@ -176,7 +176,7 @@ func TestEndpointsResolver_getAllowAllNetworkPeers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resolver := &defaultEndpointsResolver{}
-			got := resolver.getAllowAllNetworkPeers(tt.args.ports)
+			got := resolver.getAllowAllNetworkPeers(context.TODO(), nil, tt.args.ports, networking.PolicyTypeEgress)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -819,7 +819,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			),
 		)
 		if rule.From == nil {
-			ingressEndpoints = append(ingressEndpoints, resolver.getAllowAllNetworkPeers(rule.Ports)...)
+			ingressEndpoints = append(ingressEndpoints, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
 			continue
 		}
 		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
@@ -863,7 +863,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 
 		for _, rule := range policy.Spec.Egress {
 			if rule.To == nil {
-				egressEndpoints = append(egressEndpoints, resolver.getAllowAllNetworkPeers(rule.Ports)...)
+				egressEndpoints = append(egressEndpoints, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeEgress)...)
 				continue
 			}
 			resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, networking.PolicyTypeEgress)
@@ -893,5 +893,211 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 		assert.Equal(t, srcPod.Spec.Containers[0].Ports[0].ContainerPort, *egPE.Ports[0].Port)
 		assert.Equal(t, portsMap[policy.Spec.Egress[0].Ports[0].Port.StrVal], *egPE.Ports[0].Port)
 		assert.Equal(t, *policy.Spec.Egress[0].Ports[0].EndPort, *egPE.Ports[0].EndPort)
+	}
+}
+
+func TestEndpointsResolver_ResolveNetworkPeers_NamedIngressPortsIPBlocks(t *testing.T) {
+	protocolTCP := corev1.ProtocolTCP
+	port8080 := int32(8080)
+	port9090 := int32(9090)
+
+	dstPod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod1",
+			Namespace: "dst",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "pod1",
+					Ports: []corev1.ContainerPort{
+						{
+							ContainerPort: port8080,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "src-port",
+						},
+						{
+							ContainerPort: port9090,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "src-port2",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "1.0.0.1",
+		},
+	}
+
+	portsMap := map[string]int32{
+		"src-port":  port8080,
+		"src-port2": port9090,
+	}
+
+	// the policy is applied to dst namespace on dst pod
+	policy := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "netpol",
+			Namespace: "dst",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+			Ingress: []networking.NetworkPolicyIngressRule{
+				{
+					From: []networking.NetworkPolicyPeer{
+						{
+							IPBlock: &networking.IPBlock{
+								CIDR: "100.64.0.0/16",
+							},
+						},
+					},
+					Ports: []networking.NetworkPolicyPort{
+						{
+							Protocol: &protocolTCP,
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "src-port"},
+						},
+						{
+							Protocol: &protocolTCP,
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "src-port2"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mock_client.NewMockClient(ctrl)
+	resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+
+	var ingressEndpoints []policyinfo.EndpointInfo
+	ctx := context.TODO()
+	for _, rule := range policy.Spec.Ingress {
+		podList := &corev1.PodList{}
+		gomock.InOrder(
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPod}
+					return nil
+				},
+			),
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPod}
+					return nil
+				},
+			),
+		)
+		if rule.From == nil {
+			ingressEndpoints = append(ingressEndpoints, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
+			continue
+		}
+		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
+		assert.NoError(t, err)
+		ingressEndpoints = append(ingressEndpoints, resolvedPeers...)
+	}
+
+	ingPE := ingressEndpoints[0]
+
+	// Should allow ingress from 100.64.0.0/16 on ports 8080 and 9090
+	assert.Equal(t, "100.64.0.0/16", string(ingPE.CIDR))
+	assert.Equal(t, 2, len(ingPE.Ports))
+	assert.Equal(t, dstPod.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
+	assert.Equal(t, dstPod.Spec.Containers[0].Ports[1].ContainerPort, *ingPE.Ports[1].Port)
+	assert.Equal(t, portsMap[policy.Spec.Ingress[0].Ports[0].Port.StrVal], *ingPE.Ports[0].Port)
+	assert.Equal(t, portsMap[policy.Spec.Ingress[0].Ports[1].Port.StrVal], *ingPE.Ports[1].Port)
+
+	dstPod2 := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod2",
+			Namespace: "dst2",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "pod2",
+					Ports: []corev1.ContainerPort{
+						{
+							ContainerPort: port8080,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "src-port",
+						},
+						{
+							ContainerPort: port9090,
+							Protocol:      corev1.ProtocolTCP,
+							Name:          "src-port2",
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "1.0.0.2",
+		},
+	}
+
+	policyAll := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "netpolAll",
+			Namespace: "dst2",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+			Ingress: []networking.NetworkPolicyIngressRule{
+				{
+					Ports: []networking.NetworkPolicyPort{
+						{
+							Protocol: &protocolTCP,
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "src-port"},
+						},
+						{
+							Protocol: &protocolTCP,
+							Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "src-port2"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var ingressEndpointsAll []policyinfo.EndpointInfo
+	for _, rule := range policyAll.Spec.Ingress {
+		podList := &corev1.PodList{}
+		gomock.InOrder(
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPod2}
+					return nil
+				},
+			),
+			mockClient.EXPECT().List(gomock.Any(), podList, gomock.Any()).DoAndReturn(
+				func(ctx context.Context, podList *corev1.PodList, opts ...client.ListOption) error {
+					podList.Items = []corev1.Pod{dstPod2}
+					return nil
+				},
+			),
+		)
+		if rule.From == nil {
+			ingressEndpointsAll = append(ingressEndpointsAll, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
+			continue
+		}
+		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
+		assert.NoError(t, err)
+		ingressEndpointsAll = append(ingressEndpointsAll, resolvedPeers...)
+	}
+
+	// Should allow ingress from all addresses on ports 8080 and 9090
+	for _, ingPE := range ingressEndpointsAll {
+		assert.True(t, "0.0.0.0/0" == string(ingPE.CIDR) || "::/0" == string(ingPE.CIDR))
+		assert.Equal(t, 2, len(ingPE.Ports))
+		assert.Equal(t, dstPod2.Spec.Containers[0].Ports[0].ContainerPort, *ingPE.Ports[0].Port)
+		assert.Equal(t, dstPod2.Spec.Containers[0].Ports[1].ContainerPort, *ingPE.Ports[1].Port)
+		assert.Equal(t, portsMap[policy.Spec.Ingress[0].Ports[0].Port.StrVal], *ingPE.Ports[0].Port)
+		assert.Equal(t, portsMap[policy.Spec.Ingress[0].Ports[1].Port.StrVal], *ingPE.Ports[1].Port)
 	}
 }

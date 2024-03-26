@@ -165,7 +165,7 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: ko
 ko: $(KO)
 $(KO): $(LOCALBIN)
-	test -s $(LOCALBIN)/ko || GOBIN=$(LOCALBIN) go install github.com/google/ko@v0.11.2
+	test -s $(LOCALBIN)/ko || GOBIN=$(LOCALBIN) go install github.com/google/ko@v0.15.2
 
 .PHONY: mockgen
 mockgen: $(MOCKGEN)
