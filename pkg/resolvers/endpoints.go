@@ -65,7 +65,7 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 	for _, rule := range policy.Spec.Ingress {
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
 		if rule.From == nil {
-			ingressEndpoints = append(ingressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
+			ingressEndpoints = append(ingressEndpoints, r.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
 			continue
 		}
 		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
@@ -83,7 +83,7 @@ func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, p
 	for _, rule := range policy.Spec.Egress {
 		r.logger.V(1).Info("computing egress addresses", "peers", rule.To)
 		if rule.To == nil {
-			egressEndpoints = append(egressEndpoints, r.getAllowAllNetworkPeers(rule.Ports)...)
+			egressEndpoints = append(egressEndpoints, r.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeEgress)...)
 			continue
 		}
 		resolvedPeers, err := r.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, networking.PolicyTypeEgress)
@@ -130,11 +130,17 @@ func (r *defaultEndpointsResolver) computePodSelectorEndpoints(ctx context.Conte
 	return podEndpoints, nil
 }
 
-func (r *defaultEndpointsResolver) getAllowAllNetworkPeers(ports []networking.NetworkPolicyPort) []policyinfo.EndpointInfo {
+func (r *defaultEndpointsResolver) getAllowAllNetworkPeers(ctx context.Context, policy *networking.NetworkPolicy, ports []networking.NetworkPolicyPort, policyType networking.PolicyType) []policyinfo.EndpointInfo {
 	var portList []policyinfo.Port
 	for _, port := range ports {
-		if port := r.convertToPolicyInfoPortForCIDRs(port); port != nil {
-			portList = append(portList, *port)
+		portInfo := r.convertToPolicyInfoPortForCIDRs(port)
+		if portInfo != nil {
+			portList = append(portList, *portInfo)
+		} else {
+			if policyType == networking.PolicyTypeIngress {
+				ports := r.getIngressRulesPorts(ctx, policy.Namespace, &policy.Spec.PodSelector, []networking.NetworkPolicyPort{port})
+				portList = append(portList, ports...)
+			}
 		}
 	}
 	if len(ports) != 0 && len(portList) == 0 {
@@ -163,8 +169,14 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 			}
 			var portList []policyinfo.Port
 			for _, port := range ports {
-				if port := r.convertToPolicyInfoPortForCIDRs(port); port != nil {
-					portList = append(portList, *port)
+				portInfo := r.convertToPolicyInfoPortForCIDRs(port)
+				if portInfo != nil {
+					portList = append(portList, *portInfo)
+				} else {
+					if policyType == networking.PolicyTypeIngress {
+						ports := r.getIngressRulesPorts(ctx, policy.Namespace, &policy.Spec.PodSelector, []networking.NetworkPolicyPort{port})
+						portList = append(portList, ports...)
+					}
 				}
 			}
 			// A non-empty input port list would imply the user wants to allow traffic only on the specified ports.
