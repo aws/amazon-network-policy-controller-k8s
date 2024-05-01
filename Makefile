@@ -191,6 +191,7 @@ format:       ## Format all Go source code files.
 	@exit $(shell find ./* \
 	  -type f \
 	  -name '*.go' \
+	  ! -name 'zz_generated*.go' \
 	  -print0 | sort -z | xargs -0 -- goimports $(or $(FORMAT_FLAGS),-w) | wc -l | bc)
 
 run-cyclonus-test: ## Runs cyclonus tests on an existing cluster. Call with CLUSTER_NAME=<name of your cluster> to execute cyclonus test
