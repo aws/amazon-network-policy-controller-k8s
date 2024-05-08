@@ -182,6 +182,12 @@ docker-buildx: test
 		docker buildx build --platform=linux/$$platform -t $(IMG)-$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
 	done
 
+.PHONY: docker-buildx-no-test
+docker-buildx-no-test:
+	for platform in $(ARCHS); do \
+                docker buildx build --platform=linux/$$platform -t $(IMG)_$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
+        done
+
 # Check formatting of source code files without modification.
 check-format: FORMAT_FLAGS = -l
 check-format: format
