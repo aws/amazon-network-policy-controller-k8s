@@ -76,6 +76,7 @@ jobs:
       - uses: actions/setup-go@v4
         with:
           go-version: ${{ env.VERSION }}
+          check-latest: true
           cache-dependency-path: "**/go.sum"
       - name: Install `govulncheck`
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
