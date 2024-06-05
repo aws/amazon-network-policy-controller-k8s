@@ -64,7 +64,7 @@ func (h *enqueueRequestForNamespaceEvent) Generic(_ context.Context, _ event.Gen
 }
 
 func (h *enqueueRequestForNamespaceEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, ns, nsOld *corev1.Namespace) {
-	referredPolicies, err := h.policyResolver.GetReferredPoliciesForNamespace(ctx, ns, nsOld)
+	referredPolicies, referredAdminPolicies, err := h.policyResolver.GetReferredPoliciesForNamespace(ctx, ns, nsOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "namespace", k8s.NamespacedName(ns))
 		return
@@ -74,6 +74,13 @@ func (h *enqueueRequestForNamespaceEvent) enqueueReferredPolicies(ctx context.Co
 		h.logger.V(1).Info("Enqueue from namespace reference", "policy", k8s.NamespacedName(policy), "namespace", k8s.NamespacedName(ns))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
+		}
+	}
+	for i := range referredAdminPolicies {
+		adminpolicy := &referredAdminPolicies[i]
+		h.logger.V(1).Info("Enqueue from namespace reference", "policy", k8s.NamespacedName(adminpolicy), "namespace", k8s.NamespacedName(ns))
+		h.policyEventChan <- event.GenericEvent{
+			Object: adminpolicy,
 		}
 	}
 }

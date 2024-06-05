@@ -24,44 +24,44 @@ import (
 
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/go-logr/logr"
-	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	adminnetworking "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 )
 
-// NewEnqueueRequestForPolicyEvent constructs new enqueueRequestsForPolicyEvent
-func NewEnqueueRequestForPolicyEvent(policyTracker resolvers.PolicyTracker, podUpdateBatchPeriodDuration time.Duration,
+// NewEnqueueRequestForAdminPolicyEvent constructs new enqueueRequestsForAdminPolicyEvent
+func NewEnqueueRequestForAdminPolicyEvent(policyTracker resolvers.PolicyTracker, podUpdateBatchPeriodDuration time.Duration,
 	logger logr.Logger) handler.EventHandler {
-	return &enqueueRequestForPolicyEvent{
+	return &enqueueRequestForAdminPolicyEvent{
 		policyTracker:                policyTracker,
 		podUpdateBatchPeriodDuration: podUpdateBatchPeriodDuration,
 		logger:                       logger,
 	}
 }
 
-var _ handler.EventHandler = (*enqueueRequestForPolicyEvent)(nil)
+var _ handler.EventHandler = (*enqueueRequestForAdminPolicyEvent)(nil)
 
-type enqueueRequestForPolicyEvent struct {
+type enqueueRequestForAdminPolicyEvent struct {
 	policyTracker                resolvers.PolicyTracker
 	podUpdateBatchPeriodDuration time.Duration
 	logger                       logr.Logger
 }
 
-func (h *enqueueRequestForPolicyEvent) Create(_ context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
-	policy := e.Object.(*networking.NetworkPolicy)
-	h.logger.V(1).Info("Handling create event", "policy", k8s.NamespacedName(policy))
+func (h *enqueueRequestForAdminPolicyEvent) Create(_ context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
+	policy := e.Object.(*adminnetworking.AdminNetworkPolicy)
+	h.logger.V(1).Info("Handling create event", "admin policy", k8s.NamespacedName(policy))
 	h.enqueuePolicy(queue, policy, 0)
 }
 
-func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
-	oldPolicy := e.ObjectOld.(*networking.NetworkPolicy)
-	newPolicy := e.ObjectNew.(*networking.NetworkPolicy)
+func (h *enqueueRequestForAdminPolicyEvent) Update(_ context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
+	oldPolicy := e.ObjectOld.(*adminnetworking.AdminNetworkPolicy)
+	newPolicy := e.ObjectNew.(*adminnetworking.AdminNetworkPolicy)
 
-	h.logger.V(1).Info("Handling update event", "policy", k8s.NamespacedName(newPolicy))
+	h.logger.V(1).Info("Handling update event", "admin policy", k8s.NamespacedName(newPolicy))
 	if !equality.Semantic.DeepEqual(newPolicy.ResourceVersion, oldPolicy.ResourceVersion) && equality.Semantic.DeepEqual(oldPolicy.Spec, newPolicy.Spec) &&
 		equality.Semantic.DeepEqual(oldPolicy.DeletionTimestamp.IsZero(), newPolicy.DeletionTimestamp.IsZero()) {
 		return
@@ -69,28 +69,28 @@ func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateE
 	h.enqueuePolicy(queue, newPolicy, 0)
 }
 
-func (h *enqueueRequestForPolicyEvent) Delete(_ context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
-	policy := e.Object.(*networking.NetworkPolicy)
-	h.logger.V(1).Info("Handling delete event", "policy", k8s.NamespacedName(policy))
-	h.policyTracker.RemovePolicy(policy, nil, false)
+func (h *enqueueRequestForAdminPolicyEvent) Delete(_ context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
+	policy := e.Object.(*adminnetworking.AdminNetworkPolicy)
+	h.logger.V(1).Info("Handling delete event", "admin policy", k8s.NamespacedName(policy))
+	h.policyTracker.RemovePolicy(nil, policy, true)
 }
 
-func (h *enqueueRequestForPolicyEvent) Generic(_ context.Context, e event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForAdminPolicyEvent) Generic(_ context.Context, e event.GenericEvent, q workqueue.RateLimitingInterface) {
 	val := e.Object.GetObjectKind()
 	// This is a hacky solution
-	if val.GroupVersionKind().Kind != "NetworkPolicy" {
+	if val.GroupVersionKind().Kind != "AdminNetworkPolicy" {
 		return
 	}
-	policy := e.Object.(*networking.NetworkPolicy)
-	h.logger.Info("Handling generic event", "policy", k8s.NamespacedName(policy))
+	policy := e.Object.(*adminnetworking.AdminNetworkPolicy)
+	h.logger.Info("Handling generic event", "admin policy", k8s.NamespacedName(policy))
 	h.enqueuePolicy(q, policy, h.podUpdateBatchPeriodDuration)
 }
 
-func (h *enqueueRequestForPolicyEvent) enqueuePolicy(queue workqueue.RateLimitingInterface, policy *networking.NetworkPolicy, addAfter time.Duration) {
-	h.policyTracker.UpdatePolicy(policy, nil, false)
+func (h *enqueueRequestForAdminPolicyEvent) enqueuePolicy(queue workqueue.RateLimitingInterface, policy *adminnetworking.AdminNetworkPolicy, addAfter time.Duration) {
+	h.policyTracker.UpdatePolicy(nil, policy, true)
 	queue.AddAfter(reconcile.Request{
 		NamespacedName: types.NamespacedName{
-			Namespace: policy.Namespace,
+			Namespace: "",
 			Name:      policy.Name,
 		},
 	}, addAfter)

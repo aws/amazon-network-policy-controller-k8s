@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	adminnetworking "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
@@ -193,6 +194,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 	}
 	type args struct {
 		netpol           *networking.NetworkPolicy
+		adminnetpol      *adminnetworking.AdminNetworkPolicy
 		podListCalls     []podListCall
 		serviceListCalls []serviceListCall
 	}
@@ -309,6 +311,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 				podListCalls: []podListCall{
 					{},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 		},
 		{
@@ -320,6 +323,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						pods: []corev1.Pod{pod1, pod3, podNoIP},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantPodEndpoints: []policyinfo.PodEndpoint{
 				{PodIP: "1.0.0.1", Name: "pod1", Namespace: "ns"},
@@ -335,11 +339,12 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						pods: []corev1.Pod{pod1, pod2, pod3},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantIngressEndpoints: []policyinfo.EndpointInfo{
-				{CIDR: "1.0.0.1"},
-				{CIDR: "1.0.0.2"},
-				{CIDR: "1.0.0.3"},
+				{CIDR: "1.0.0.1", Action: "Allow"},
+				{CIDR: "1.0.0.2", Action: "Allow"},
+				{CIDR: "1.0.0.3", Action: "Allow"},
 			},
 			wantPodEndpoints: []policyinfo.PodEndpoint{
 				{PodIP: "1.0.0.1", Name: "pod1", Namespace: "ns"},
@@ -361,11 +366,12 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						services: []corev1.Service{svc},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantEgressEndpoints: []policyinfo.EndpointInfo{
-				{CIDR: "1.0.0.2"},
-				{CIDR: "1.0.0.3"},
-				{CIDR: "100.0.10.20"},
+				{CIDR: "1.0.0.2", Action: "Allow"},
+				{CIDR: "1.0.0.3", Action: "Allow"},
+				{CIDR: "100.0.10.20", Action: "Allow"},
 			},
 			wantPodEndpoints: []policyinfo.PodEndpoint{
 				{PodIP: "1.0.0.2", Name: "pod2", Namespace: "ns"},
@@ -392,10 +398,11 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantEgressEndpoints: []policyinfo.EndpointInfo{
-				{CIDR: "1.0.0.2"},
-				{CIDR: "1.0.0.3"},
+				{CIDR: "1.0.0.2", Action: "Allow"},
+				{CIDR: "1.0.0.3", Action: "Allow"},
 			},
 			wantPodEndpoints: []policyinfo.PodEndpoint{
 				{PodIP: "1.0.0.2", Name: "pod2", Namespace: "ns"},
@@ -482,6 +489,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						pods: []corev1.Pod{podNoIP, pod3},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantIngressEndpoints: []policyinfo.EndpointInfo{
 				{CIDR: "10.20.0.0/16", Except: []policyinfo.NetworkAddress{"10.20.0.5", "10.20.0.6"}, Ports: []policyinfo.Port{{Protocol: &protocolTCP, Port: &port80}}},
@@ -533,6 +541,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						pods: []corev1.Pod{podNoIP},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantIngressEndpoints: []policyinfo.EndpointInfo{
 				{CIDR: "0.0.0.0/0", Ports: []policyinfo.Port{{Protocol: &protocolTCP, Port: &port80}}},
@@ -574,6 +583,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 						pods: []corev1.Pod{podNoIP},
 					},
 				},
+				adminnetpol: &adminnetworking.AdminNetworkPolicy{},
 			},
 			wantIngressEndpoints: []policyinfo.EndpointInfo{
 				{CIDR: "0.0.0.0/0"},
@@ -614,7 +624,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 				).AnyTimes()
 			}
 
-			ingressEndpoints, egressEndpoints, podEndpoints, err := resolver.Resolve(context.Background(), tt.args.netpol)
+			ingressEndpoints, egressEndpoints, podEndpoints, err := resolver.Resolve(context.Background(), tt.args.netpol, tt.args.adminnetpol, false, nil)
 
 			if len(tt.wantErr) > 0 {
 				assert.EqualError(t, err, tt.wantErr)
@@ -822,7 +832,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 			ingressEndpoints = append(ingressEndpoints, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
 			continue
 		}
-		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
+		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, nil, rule.From, rule.Ports, nil, nil, nil, networking.PolicyTypeIngress, "Allow", false)
 		assert.NoError(t, err)
 		ingressEndpoints = append(ingressEndpoints, resolvedPeers...)
 
@@ -866,9 +876,9 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 				egressEndpoints = append(egressEndpoints, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeEgress)...)
 				continue
 			}
-			resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.To, rule.Ports, networking.PolicyTypeEgress)
+			resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, nil, rule.To, rule.Ports, nil, nil, nil, networking.PolicyTypeEgress, "Allow", false)
 			assert.NoError(t, err)
-			resolvedClusterIPs, err := resolver.resolveServiceClusterIPs(ctx, rule.To, policy.Namespace, rule.Ports)
+			resolvedClusterIPs, err := resolver.resolveServiceClusterIPs(ctx, rule.To, nil, policy.Namespace, rule.Ports, nil, "Allow", false)
 			assert.NoError(t, err)
 			egressEndpoints = append(egressEndpoints, resolvedPeers...)
 			egressEndpoints = append(egressEndpoints, resolvedClusterIPs...)
@@ -996,7 +1006,7 @@ func TestEndpointsResolver_ResolveNetworkPeers_NamedIngressPortsIPBlocks(t *test
 			ingressEndpoints = append(ingressEndpoints, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
 			continue
 		}
-		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
+		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, nil, rule.From, rule.Ports, nil, nil, nil, networking.PolicyTypeIngress, "Allow", false)
 		assert.NoError(t, err)
 		ingressEndpoints = append(ingressEndpoints, resolvedPeers...)
 	}
@@ -1086,7 +1096,7 @@ func TestEndpointsResolver_ResolveNetworkPeers_NamedIngressPortsIPBlocks(t *test
 			ingressEndpointsAll = append(ingressEndpointsAll, resolver.getAllowAllNetworkPeers(ctx, policy, rule.Ports, networking.PolicyTypeIngress)...)
 			continue
 		}
-		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, rule.From, rule.Ports, networking.PolicyTypeIngress)
+		resolvedPeers, err := resolver.resolveNetworkPeers(ctx, policy, nil, rule.From, rule.Ports, nil, nil, nil, networking.PolicyTypeIngress, "Allow", false)
 		assert.NoError(t, err)
 		ingressEndpointsAll = append(ingressEndpointsAll, resolvedPeers...)
 	}

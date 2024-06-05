@@ -85,7 +85,7 @@ func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context,
 		h.logger.V(1).Info("Pod does not have an IP yet", "pod", k8s.NamespacedName(pod))
 		return
 	}
-	referredPolicies, err := h.policyResolver.GetReferredPoliciesForPod(ctx, pod, podOld)
+	referredPolicies, referredAdminPolicies, err := h.policyResolver.GetReferredPoliciesForPod(ctx, pod, podOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "pod", k8s.NamespacedName(pod))
 		return
@@ -95,6 +95,13 @@ func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context,
 		h.logger.V(1).Info("Enqueue from pod reference", "policy", k8s.NamespacedName(policy), "pod", k8s.NamespacedName(pod))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
+		}
+	}
+	for i := range referredAdminPolicies {
+		adminPolicy := &referredAdminPolicies[i]
+		h.logger.V(1).Info("Enqueue from pod reference", "policy", k8s.NamespacedName(adminPolicy), "pod", k8s.NamespacedName(pod))
+		h.policyEventChan <- event.GenericEvent{
+			Object: adminPolicy,
 		}
 	}
 }

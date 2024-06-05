@@ -43,6 +43,7 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/configmap"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/version"
+	adminnetworking "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -55,6 +56,8 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(policyinfo.AddToScheme(scheme))
+
+	utilruntime.Must(adminnetworking.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -121,10 +124,17 @@ func main() {
 	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
 	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
 		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("policy"))
+	adminPolicyController := controllers.NewAdminPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
+		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("admin-policy"))
 	if enableNetworkPolicyController {
 		setupLog.Info("Network Policy controller is enabled, starting watches")
 		if err := policyController.SetupWithManager(ctx, mgr); err != nil {
 			setupLog.Error(err, "Unable to setup network policy controller")
+			os.Exit(1)
+		}
+		setupLog.Info("Admin Network Policy controller is enabled, starting watches")
+		if err := adminPolicyController.SetupWithManager(ctx, mgr); err != nil {
+			setupLog.Error(err, "Unable to setup admin network policy controller")
 			os.Exit(1)
 		}
 	}

@@ -135,13 +135,13 @@ func (r *policyReconciler) reconcilePolicy(ctx context.Context, policy *networki
 	if err := r.finalizerManager.AddFinalizers(ctx, policy, policyFinalizerName); err != nil {
 		return err
 	}
-	return r.policyEndpointsManager.Reconcile(ctx, policy)
+	return r.policyEndpointsManager.Reconcile(ctx, policy, false, nil)
 }
 
 func (r *policyReconciler) cleanupPolicy(ctx context.Context, policy *networking.NetworkPolicy) error {
 	if k8s.HasFinalizer(policy, policyFinalizerName) {
-		r.policyTracker.RemovePolicy(policy)
-		if err := r.policyEndpointsManager.Cleanup(ctx, policy); err != nil {
+		r.policyTracker.RemovePolicy(policy, nil, false)
+		if err := r.policyEndpointsManager.Cleanup(ctx, policy, nil, false, nil); err != nil {
 			return err
 		}
 		if err := r.finalizerManager.RemoveFinalizers(ctx, policy, policyFinalizerName); err != nil {

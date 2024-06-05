@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,11 +22,13 @@ import (
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
+	adminnetworking "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 )
 
 type PolicyEndpointsManager interface {
-	Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error
-	Cleanup(ctx context.Context, policy *networking.NetworkPolicy) error
+	Reconcile(ctx context.Context, policy *networking.NetworkPolicy, isAdmin bool, namespaces []corev1.Namespace) error
+	ReconcileAdmin(ctx context.Context, adminpolicy *adminnetworking.AdminNetworkPolicy, isAdmin bool, namespaces []corev1.Namespace) error
+	Cleanup(ctx context.Context, policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy, isAdmin bool, namespaces []corev1.Namespace) error
 }
 
 // NewPolicyEndpointsManager constructs a new policyEndpointsManager
@@ -48,27 +51,59 @@ type policyEndpointsManager struct {
 	logger            logr.Logger
 }
 
-func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error {
-	ingressRules, egressRules, podSelectorEndpoints, err := m.endpointsResolver.Resolve(ctx, policy)
+func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy, isAdmin bool, namespaces []corev1.Namespace) error {
+	err := m.reconcileHelper(ctx, policy, nil, false, nil)
+	return err
+}
+
+func (m *policyEndpointsManager) ReconcileAdmin(ctx context.Context, adminpolicy *adminnetworking.AdminNetworkPolicy, isAdmin bool, namespaces []corev1.Namespace) error {
+	var err error
+	if namespaces != nil {
+		err = m.reconcileHelper(ctx, nil, adminpolicy, true, namespaces)
+		return err
+	}
+	// Cluster wide PE in kube-system
+	err = m.reconcileHelper(ctx, nil, adminpolicy, true, nil)
+	return err
+}
+
+func (m *policyEndpointsManager) cleanupStalePEs(ctx context.Context, pes map[string]*policyinfo.PolicyEndpoint) error {
+	for _, pe := range pes {
+		if err := m.k8sClient.Delete(ctx, pe); err != nil {
+			return errors.Wrap(err, "unable to delete policyendpoint")
+		}
+		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(pe))
+	}
+	return nil
+}
+
+func (m *policyEndpointsManager) reconcileHelper(ctx context.Context, policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy, isAdmin bool, namespace []corev1.Namespace) error {
+	ingressRules, egressRules, podSelectorEndpoints, err := m.endpointsResolver.Resolve(ctx, policy, adminpolicy, isAdmin, namespace)
 	if err != nil {
 		return err
 	}
-
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
-	if err := m.k8sClient.List(ctx, policyEndpointList,
-		client.InNamespace(policy.Namespace),
-		client.MatchingFields{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
-		return err
+	if isAdmin {
+		if err := m.k8sClient.List(ctx, policyEndpointList,
+			client.InNamespace("kube-system"),
+			client.MatchingFields{IndexKeyPolicyReferenceName: adminpolicy.Name}); err != nil {
+			return err
+		}
+	} else {
+		if err := m.k8sClient.List(ctx, policyEndpointList,
+			client.InNamespace(policy.Namespace),
+			client.MatchingFields{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
+			return err
+		}
 	}
 	existingPolicyEndpoints := make([]policyinfo.PolicyEndpoint, 0, len(policyEndpointList.Items))
-	for _, policyEndpoint := range policyEndpointList.Items {
-		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
-	}
+	existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpointList.Items...)
 
-	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
+	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, adminpolicy, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints, isAdmin, namespace)
 	if err != nil {
 		return err
 	}
+
 	m.logger.Info("Got policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
 	for _, policyEndpoint := range createList {
 		if err := m.k8sClient.Create(ctx, &policyEndpoint); err != nil {
@@ -98,18 +133,39 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		}
 		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
-
 	return nil
 }
 
-func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking.NetworkPolicy) error {
+func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy, isAdmin bool, namespaces []corev1.Namespace) error {
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
-	if err := m.k8sClient.List(ctx, policyEndpointList,
-		client.InNamespace(policy.Namespace),
-		client.MatchingLabels{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
-		return errors.Wrap(err, "unable to list policyendpoints")
+	var policyEndpoints []policyinfo.PolicyEndpoint
+	if isAdmin {
+		if namespaces != nil {
+			for _, ns := range namespaces {
+				if err := m.k8sClient.List(ctx, policyEndpointList,
+					client.InNamespace(ns.Name),
+					client.MatchingLabels{IndexKeyPolicyReferenceName: adminpolicy.Name}); err != nil {
+					return errors.Wrap(err, "unable to list policyendpoints")
+				}
+				policyEndpoints = append(policyEndpoints, policyEndpointList.Items...)
+			}
+		} else {
+			if err := m.k8sClient.List(ctx, policyEndpointList,
+				client.InNamespace("kube-system"),
+				client.MatchingLabels{IndexKeyPolicyReferenceName: adminpolicy.Name}); err != nil {
+				return errors.Wrap(err, "unable to list policyendpoints")
+			}
+			policyEndpoints = append(policyEndpoints, policyEndpointList.Items...)
+		}
+	} else {
+		if err := m.k8sClient.List(ctx, policyEndpointList,
+			client.InNamespace(policy.Namespace),
+			client.MatchingLabels{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
+			return errors.Wrap(err, "unable to list policyendpoints")
+		}
+		policyEndpoints = append(policyEndpoints, policyEndpointList.Items...)
 	}
-	for _, policyEndpoint := range policyEndpointList.Items {
+	for _, policyEndpoint := range policyEndpoints {
 		if err := m.k8sClient.Delete(ctx, &policyEndpoint); err != nil {
 			return errors.Wrap(err, "unable to delete policyendpoint")
 		}
@@ -120,15 +176,15 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 
 // computePolicyEndpoints computes the policy endpoints for the given policy
 // The return values are list of policy endpoints to create, update and delete
-func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
-	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint,
+	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint, isAdmin bool, namespace []corev1.Namespace) ([]policyinfo.PolicyEndpoint,
 	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, error) {
 
 	// Loop through ingressEndpoints, egressEndpoints and podSelectorEndpoints and put in map
 	// also populate them into policy endpoints
 	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
-		policy, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
+		policy, adminpolicy, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints, isAdmin,
 	)
 
 	doNotDelete := sets.Set[types.NamespacedName]{}
@@ -138,11 +194,11 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	var deletePolicyEndpoints []policyinfo.PolicyEndpoint
 
 	// packing new ingress rules
-	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(policy, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(policy, adminpolicy, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes, isAdmin, namespace)
 	// packing new egress rules
-	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(policy, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(policy, adminpolicy, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes, isAdmin, namespace)
 	// packing new pod selector
-	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(policy, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(policy, adminpolicy, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes, isAdmin, namespace)
 
 	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
 	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
@@ -158,7 +214,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	updatePolicyEndpoints = append(updatePolicyEndpoints, modifiedEndpoints...)
 	if len(createPolicyEndpoints) == 0 && len(updatePolicyEndpoints) == 0 {
 		if len(deletePolicyEndpoints) == 0 {
-			newEP := m.newPolicyEndpoint(policy, nil, nil, nil)
+			newEP := m.newPolicyEndpoint(policy, adminpolicy, nil, nil, nil, isAdmin, namespace)
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		} else {
 			ep := deletePolicyEndpoints[0]
@@ -185,13 +241,14 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
 	combinedMap := make(map[string]policyinfo.EndpointInfo)
 	for _, iep := range ingressEndpoints {
-		if _, ok := combinedMap[string(iep.CIDR)]; ok {
-			tempIEP := combinedMap[string(iep.CIDR)]
-			tempIEP.Ports = append(combinedMap[string(iep.CIDR)].Ports, iep.Ports...)
-			tempIEP.Except = append(combinedMap[string(iep.CIDR)].Except, iep.Except...)
-			combinedMap[string(iep.CIDR)] = tempIEP
+		key := string(iep.CIDR) + iep.Action
+		if _, ok := combinedMap[key]; ok {
+			tempIEP := combinedMap[key]
+			tempIEP.Ports = append(combinedMap[key].Ports, iep.Ports...)
+			tempIEP.Except = append(combinedMap[key].Except, iep.Except...)
+			combinedMap[key] = tempIEP
 		} else {
-			combinedMap[string(iep.CIDR)] = iep
+			combinedMap[key] = iep
 		}
 	}
 	if len(combinedMap) > 0 {
@@ -200,34 +257,78 @@ func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyi
 	return nil
 }
 
-func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) newPolicyEndpoint(policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy,
 	ingressRules []policyinfo.EndpointInfo, egressRules []policyinfo.EndpointInfo,
-	podSelectorEndpoints []policyinfo.PodEndpoint) policyinfo.PolicyEndpoint {
+	podSelectorEndpoints []policyinfo.PodEndpoint, isAdmin bool, namespace []corev1.Namespace) policyinfo.PolicyEndpoint {
+	var policyName, policyNamespace, kind, apiVersion string
+	var podEndpointNamespaces []string
+	var policyUID types.UID
+	var priority int
+	var isGlobal bool
+	var podSelector *metav1.LabelSelector
+	var podIsolation []networking.PolicyType
+	if isAdmin {
+		policyName = adminpolicy.Name
+		policyNamespace = "kube-system"
+		for _, ns := range namespace {
+			podEndpointNamespaces = append(podEndpointNamespaces, ns.Name)
+		}
+		kind = "AdminNetworkPolicy"
+		policyUID = adminpolicy.UID
+		apiVersion = "policy.networking.k8s.io/v1alpha1"
+		priority = int(adminpolicy.Spec.Priority)
+		isGlobal = true
+		if adminpolicy.Spec.Subject.Namespaces != nil {
+			podSelector = nil
+		} else {
+			podSelector = &adminpolicy.Spec.Subject.Pods.PodSelector
+		}
+		if len(adminpolicy.Spec.Ingress) > 0 && len(adminpolicy.Spec.Egress) > 0 {
+			podIsolation = []networking.PolicyType{networking.PolicyTypeIngress, networking.PolicyTypeEgress}
+		} else if len(adminpolicy.Spec.Ingress) > 0 {
+			podIsolation = []networking.PolicyType{networking.PolicyTypeIngress}
+		} else {
+			podIsolation = []networking.PolicyType{networking.PolicyTypeEgress}
+		}
+	} else {
+		policyName = policy.Name
+		policyNamespace = policy.Namespace
+		apiVersion = "networking.k8s.io/v1"
+		kind = "NetworkPolicy"
+		policyUID = policy.UID
+		priority = 1001
+		isGlobal = false
+		podSelector = &policy.Spec.PodSelector
+		podIsolation = policy.Spec.PolicyTypes
+	}
 	blockOwnerDeletion := true
 	isController := true
 	policyEndpoint := policyinfo.PolicyEndpoint{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:    policy.Namespace,
-			GenerateName: policy.Name + "-",
+			Namespace:    policyNamespace,
+			GenerateName: policyName + "-",
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         "networking.k8s.io/v1",
-					Kind:               "NetworkPolicy",
-					Name:               policy.Name,
-					UID:                policy.UID,
+					APIVersion:         apiVersion,
+					Kind:               kind,
+					Name:               policyName,
+					UID:                policyUID,
 					BlockOwnerDeletion: &blockOwnerDeletion,
 					Controller:         &isController,
 				},
 			},
 		},
 		Spec: policyinfo.PolicyEndpointSpec{
-			PodSelector:          &policy.Spec.PodSelector,
+			Namespaces:           podEndpointNamespaces,
+			Priority:             priority,
+			IsGlobal:             isGlobal,
+			PodSelector:          podSelector,
 			PodSelectorEndpoints: podSelectorEndpoints,
 			PolicyRef: policyinfo.PolicyReference{
-				Namespace: policy.Namespace,
-				Name:      policy.Name,
+				Namespace: policyNamespace,
+				Name:      policyName,
 			},
-			PodIsolation: policy.Spec.PolicyTypes,
+			PodIsolation: podIsolation,
 			Ingress:      ingressRules,
 			Egress:       egressRules,
 		},
@@ -246,6 +347,7 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
 	hasher := sha256.New()
 	hasher.Write([]byte(info.CIDR))
+	hasher.Write([]byte(info.Action))
 	for _, except := range info.Except {
 		hasher.Write([]byte(except))
 	}
@@ -266,9 +368,9 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 // processExistingPolicyEndpoints processes the existing policies with the incoming network policy changes
 // it returns required rules and pod selector changes, and potential modifications and deletions on policy endpoints.
 func (m *policyEndpointsManager) processExistingPolicyEndpoints(
-	policy *networking.NetworkPolicy,
+	policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
-	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint,
+	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint, isAdmin bool,
 ) (
 	map[string]policyinfo.EndpointInfo,
 	map[string]policyinfo.EndpointInfo,
@@ -321,10 +423,26 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 				podSelectorEndpointSet.Delete(ps)
 			}
 		}
+
 		policyEndpointChanged := false
-		if !equality.Semantic.DeepEqual(policy.Spec.PolicyTypes, existingPolicyEndpoints[i].Spec.PodIsolation) {
-			existingPolicyEndpoints[i].Spec.PodIsolation = policy.Spec.PolicyTypes
-			policyEndpointChanged = true
+		if isAdmin {
+			var podIsolation []networking.PolicyType
+			if len(adminpolicy.Spec.Ingress) > 0 && len(adminpolicy.Spec.Egress) > 0 {
+				podIsolation = []networking.PolicyType{"Ingress", "Egress"}
+			} else if len(adminpolicy.Spec.Ingress) > 0 {
+				podIsolation = []networking.PolicyType{"Ingress"}
+			} else {
+				podIsolation = []networking.PolicyType{"Egress"}
+			}
+			if !equality.Semantic.DeepEqual(podIsolation, existingPolicyEndpoints[i].Spec.PodIsolation) {
+				existingPolicyEndpoints[i].Spec.PodIsolation = podIsolation
+				policyEndpointChanged = true
+			}
+		} else {
+			if !equality.Semantic.DeepEqual(policy.Spec.PolicyTypes, existingPolicyEndpoints[i].Spec.PodIsolation) {
+				existingPolicyEndpoints[i].Spec.PodIsolation = policy.Spec.PolicyTypes
+				policyEndpointChanged = true
+			}
 		}
 
 		if len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0 {
@@ -347,9 +465,9 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 
 // packingIngressRules iterates over ingress rules across available policy endpoints and required ingress rule changes.
 // it returns the ingress rules packed in policy endpoints and a set of policy endpoints that need to be kept.
-func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy,
 	rulesMap map[string]policyinfo.EndpointInfo,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint, isAdmin bool, namespace []corev1.Namespace) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
@@ -381,7 +499,7 @@ func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkP
 	if chunkEndIdx < len(ingressList) {
 		ingressRuleChunks := lo.Chunk(ingressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range ingressRuleChunks {
-			newEP := m.newPolicyEndpoint(policy, m.getListOfEndpointInfoFromHash(chunk, rulesMap), nil, nil)
+			newEP := m.newPolicyEndpoint(policy, adminpolicy, m.getListOfEndpointInfoFromHash(chunk, rulesMap), nil, nil, isAdmin, namespace)
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		}
 	}
@@ -390,9 +508,9 @@ func (m *policyEndpointsManager) packingIngressRules(policy *networking.NetworkP
 
 // packingEgressRules iterates over egress rules across available policy endpoints and required egress rule changes.
 // it returns the egress rules packed in policy endpoints and a set of policy endpoints that need to be kept.
-func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy,
 	rulesMap map[string]policyinfo.EndpointInfo,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint, isAdmin bool, namespace []corev1.Namespace) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
@@ -424,7 +542,7 @@ func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPo
 	if chunkEndIdx < len(egressList) {
 		egressRuleChunks := lo.Chunk(egressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range egressRuleChunks {
-			newEP := m.newPolicyEndpoint(policy, nil, m.getListOfEndpointInfoFromHash(chunk, rulesMap), nil)
+			newEP := m.newPolicyEndpoint(policy, adminpolicy, nil, m.getListOfEndpointInfoFromHash(chunk, rulesMap), nil, isAdmin, namespace)
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		}
 	}
@@ -433,13 +551,18 @@ func (m *policyEndpointsManager) packingEgressRules(policy *networking.NetworkPo
 
 // packingPodSelectorEndpoints iterates over pod selectors across available policy endpoints and required pod selector changes.
 // it returns the pod selectors packed in policy endpoints and a set of policy endpoints that need to be kept.
-func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.NetworkPolicy,
+func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.NetworkPolicy, adminpolicy *adminnetworking.AdminNetworkPolicy,
 	psList []policyinfo.PodEndpoint,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint, isAdmin bool, namespace []corev1.Namespace) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
 
 	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
+
+	var namespaces []string
+	for _, ns := range namespace {
+		namespaces = append(namespaces, ns.Name)
+	}
 
 	// try to fill existing polciy endpoints first and then new ones if needed
 	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
@@ -460,6 +583,10 @@ func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.
 			if chunkStartIdx != chunkEndIdx {
 				doNotDelete.Insert(k8s.NamespacedName(&sliceToCheck[i]))
 			}
+			if isAdmin {
+				sliceToCheck[i].Spec.Namespaces = namespaces
+				sliceToCheck[i].Spec.Priority = int(adminpolicy.Spec.Priority)
+			}
 		}
 	}
 
@@ -467,7 +594,7 @@ func (m *policyEndpointsManager) packingPodSelectorEndpoints(policy *networking.
 	if chunkEndIdx < len(psList) {
 		psChunks := lo.Chunk(psList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range psChunks {
-			newEP := m.newPolicyEndpoint(policy, nil, nil, chunk)
+			newEP := m.newPolicyEndpoint(policy, adminpolicy, nil, nil, chunk, isAdmin, namespace)
 			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
 		}
 	}
