@@ -113,7 +113,7 @@ func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manage
 		Watches(&corev1.Pod{}, podEventHandler).
 		Watches(&corev1.Namespace{}, nsEventHandler).
 		Watches(&corev1.Service{}, svcEventHandler).
-		WatchesRawSource(&source.Channel{Source: policyEventChan}, policyEventHandler).
+		WatchesRawSource(source.Channel(policyEventChan, policyEventHandler)).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.maxConcurrentReconciles,
 		}).Complete(r)
