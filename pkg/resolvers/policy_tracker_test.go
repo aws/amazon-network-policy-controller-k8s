@@ -158,7 +158,7 @@ func TestDefaultPolicyTracker_UpdatePolicy(t *testing.T) {
 				logger: logr.New(&log.NullLogSink{}),
 			}
 			for _, policy := range tt.policies {
-				policyTracker.UpdatePolicy(&policy)
+				policyTracker.UpdatePolicy(&policy, nil, false)
 			}
 			gotNsList := policyTracker.GetPoliciesWithNamespaceReferences().UnsortedList()
 			gotEgressList := policyTracker.GetPoliciesWithEgressRules().UnsortedList()
@@ -292,7 +292,7 @@ func TestDefaultPolicyTracker_RemovePolicy(t *testing.T) {
 				policyTracker.egressRulesPolicies.Store(entry, true)
 			}
 			for _, policy := range tt.policies {
-				policyTracker.RemovePolicy(&policy)
+				policyTracker.RemovePolicy(&policy, nil, false)
 			}
 			gotNsList := policyTracker.GetPoliciesWithNamespaceReferences().UnsortedList()
 			gotEgressList := policyTracker.GetPoliciesWithEgressRules().UnsortedList()

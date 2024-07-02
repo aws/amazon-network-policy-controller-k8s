@@ -79,7 +79,7 @@ func (h *enqueueRequestForServiceEvent) Generic(_ context.Context, _ event.Gener
 }
 
 func (h *enqueueRequestForServiceEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, svc *corev1.Service, svcOld *corev1.Service) {
-	referredPolicies, err := h.policyResolver.GetReferredPoliciesForService(ctx, svc, svcOld)
+	referredPolicies, referredAdminPolicies, err := h.policyResolver.GetReferredPoliciesForService(ctx, svc, svcOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "service", k8s.NamespacedName(svc))
 	}
@@ -88,6 +88,14 @@ func (h *enqueueRequestForServiceEvent) enqueueReferredPolicies(ctx context.Cont
 		h.logger.V(1).Info("Enqueue policies from service reference", "policy", k8s.NamespacedName(policy), "svc", k8s.NamespacedName(svc))
 		h.policyEventChan <- event.GenericEvent{
 			Object: policy,
+		}
+	}
+
+	for i := range referredAdminPolicies {
+		adminPolicy := &referredAdminPolicies[i]
+		h.logger.V(1).Info("Enqueue policies from service reference", "policy", k8s.NamespacedName(adminPolicy), "svc", k8s.NamespacedName(svc))
+		h.policyEventChan <- event.GenericEvent{
+			Object: adminPolicy,
 		}
 	}
 }

@@ -48,6 +48,7 @@ type Port struct {
 
 // EndpointInfo defines the network endpoint information for the policy ingress/egress
 type EndpointInfo struct {
+	Action string `json:"action"`
 	// CIDR is the network address(s) of the endpoint
 	CIDR NetworkAddress `json:"cidr"`
 
@@ -72,6 +73,10 @@ type PodEndpoint struct {
 
 // PolicyEndpointSpec defines the desired state of PolicyEndpoint
 type PolicyEndpointSpec struct {
+	IsGlobal bool `json:"isGlobal"`
+
+	Priority int `json:"priority"`
+
 	// PodSelector is the podSelector from the policy resource
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 

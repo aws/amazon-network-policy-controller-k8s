@@ -46,6 +46,8 @@ spec:
                   description: EndpointInfo defines the network endpoint information
                     for the policy ingress/egress
                   properties:
+                    action:
+                      type: string
                     cidr:
                       description: CIDR is the network address(s) of the endpoint
                       type: string
@@ -80,6 +82,7 @@ spec:
                         type: object
                       type: array
                   required:
+                  - action
                   - cidr
                   type: object
                 type: array
@@ -90,6 +93,8 @@ spec:
                   description: EndpointInfo defines the network endpoint information
                     for the policy ingress/egress
                   properties:
+                    action:
+                      type: string
                     cidr:
                       description: CIDR is the network address(s) of the endpoint
                       type: string
@@ -124,9 +129,12 @@ spec:
                         type: object
                       type: array
                   required:
+                  - action
                   - cidr
                   type: object
                 type: array
+              isGlobal:
+                type: boolean
               podIsolation:
                 description: |-
                   PodIsolation specifies whether the pod needs to be isolated for a
@@ -227,8 +235,12 @@ spec:
                 - name
                 - namespace
                 type: object
+              priority:
+                type: integer
             required:
+            - isGlobal
             - policyRef
+            - priority
             type: object
           status:
             description: PolicyEndpointStatus defines the observed state of PolicyEndpoint
