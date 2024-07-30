@@ -17,6 +17,15 @@ func LookupServiceListenPort(svc *corev1.Service, port intstr.IntOrString, proto
 	return 0, errors.Errorf("unable to find port %s on service %s", port.String(), NamespacedName(svc))
 }
 
+func LookupAdminServiceListenPort(svc *corev1.Service, port int32, protocol corev1.Protocol) (int32, error) {
+	for _, svcPort := range svc.Spec.Ports {
+		if svcPort.TargetPort.IntValue() == int(port) && svcPort.Protocol == protocol {
+			return svcPort.Port, nil
+		}
+	}
+	return 0, errors.Errorf("unable to find port %d on service %s", port, NamespacedName(svc))
+}
+
 // LookupListenPortFromPodSpec returns the numerical listener port from the service spec if the input port matches the target port
 // in the pod spec
 func LookupListenPortFromPodSpec(svc *corev1.Service, pod *corev1.Pod, port intstr.IntOrString, protocol corev1.Protocol) (int32, error) {

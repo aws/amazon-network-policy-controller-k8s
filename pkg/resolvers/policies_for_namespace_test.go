@@ -5,6 +5,7 @@ import (
 	"sort"
 	"testing"
 
+	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
 	"github.com/pkg/errors"
@@ -18,8 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
+	adminnetworking "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 )
 
 func TestPolicyReferenceResolver_GetReferredPoliciesForNamespace(t *testing.T) {
@@ -364,9 +364,11 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForNamespace(t *testing.T) {
 			for _, ref := range tt.trackedPolicies {
 				policyTracker.namespacedPolicies.Store(ref, true)
 			}
+			adminPol := &adminnetworking.AdminNetworkPolicy{}
+			netPol := &networking.NetworkPolicy{}
 			for _, item := range tt.policyGetCalls {
 				call := item
-				mockClient.EXPECT().Get(gomock.Any(), call.ref, gomock.Any()).DoAndReturn(
+				mockClient.EXPECT().Get(gomock.Any(), call.ref, netPol).DoAndReturn(
 					func(ctx context.Context, key types.NamespacedName, policy *networking.NetworkPolicy, opts ...client.GetOption) error {
 						if call.policy != nil {
 							*policy = *call.policy
@@ -374,8 +376,9 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForNamespace(t *testing.T) {
 						return call.err
 					},
 				).AnyTimes()
+				mockClient.EXPECT().Get(gomock.Any(), call.ref, adminPol).Return(apierrors.NewNotFound(schema.GroupResource{}, "")).AnyTimes()
 			}
-			got, err := policyResolver.GetReferredPoliciesForNamespace(context.Background(), tt.namespace, tt.namespaceOld)
+			got, _, err := policyResolver.GetReferredPoliciesForNamespace(context.Background(), tt.namespace, tt.namespaceOld)
 			if len(tt.wantErr) > 0 {
 				assert.EqualError(t, err, tt.wantErr)
 			} else {
@@ -564,7 +567,7 @@ func TestDefaultNamespaceUtils_isNamespaceReferredInPolicy(t *testing.T) {
 				logger:    logr.New(&log.NullLogSink{}),
 			}
 
-			got := policyResolver.isNamespaceReferredInPolicy(tt.namespace, tt.policy)
+			got := policyResolver.isNamespaceReferredInPolicy(tt.namespace, tt.policy, nil, false)
 			assert.Equal(t, tt.want, got)
 		})
 	}

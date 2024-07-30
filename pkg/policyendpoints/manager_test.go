@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	adminnetworking "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 )
@@ -20,6 +21,7 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 	}
 	type args struct {
 		policy               *networking.NetworkPolicy
+		adminpolicy          *adminnetworking.AdminNetworkPolicy
 		policyEndpoints      []policyinfo.PolicyEndpoint
 		ingressRules         []policyinfo.EndpointInfo
 		egressRules          []policyinfo.EndpointInfo
@@ -101,6 +103,7 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 					},
 					Spec: networking.NetworkPolicySpec{},
 				},
+				adminpolicy: &adminnetworking.AdminNetworkPolicy{},
 			},
 			want: want{
 				createCount: 1,
@@ -449,8 +452,8 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 			m := &policyEndpointsManager{
 				endpointChunkSize: tt.fields.endpointChunkSize,
 			}
-			createList, updateList, deleteList, err := m.computePolicyEndpoints(tt.args.policy, tt.args.policyEndpoints,
-				tt.args.ingressRules, tt.args.egressRules, tt.args.podselectorEndpoints)
+			createList, updateList, deleteList, err := m.computePolicyEndpoints(tt.args.policy, tt.args.adminpolicy, tt.args.policyEndpoints,
+				tt.args.ingressRules, tt.args.egressRules, tt.args.podselectorEndpoints, false, nil)
 
 			if len(tt.wantErr) > 0 {
 				assert.EqualError(t, err, tt.wantErr)

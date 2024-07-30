@@ -18,6 +18,7 @@ spec:
     spec:
       containers:
         - image: controller:latest
+          imagePullPolicy: Always
           args:
             - --enable-configmap-check=false
           name: controller

@@ -46,6 +46,8 @@ spec:
                   description: EndpointInfo defines the network endpoint information
                     for the policy ingress/egress
                   properties:
+                    action:
+                      type: string
                     cidr:
                       description: CIDR is the network address(s) of the endpoint
                       type: string
@@ -80,6 +82,7 @@ spec:
                         type: object
                       type: array
                   required:
+                  - action
                   - cidr
                   type: object
                 type: array
@@ -90,6 +93,8 @@ spec:
                   description: EndpointInfo defines the network endpoint information
                     for the policy ingress/egress
                   properties:
+                    action:
+                      type: string
                     cidr:
                       description: CIDR is the network address(s) of the endpoint
                       type: string
@@ -124,8 +129,17 @@ spec:
                         type: object
                       type: array
                   required:
+                  - action
                   - cidr
                   type: object
+                type: array
+              isGlobal:
+                type: boolean
+              namespaces:
+                description: Namespaces of the pod selector, will be empty for cluster
+                  wide
+                items:
+                  type: string
                 type: array
               podIsolation:
                 description: |-
@@ -227,8 +241,13 @@ spec:
                 - name
                 - namespace
                 type: object
+              priority:
+                type: integer
             required:
+            - isGlobal
+            - namespaces
             - policyRef
+            - priority
             type: object
           status:
             description: PolicyEndpointStatus defines the observed state of PolicyEndpoint
