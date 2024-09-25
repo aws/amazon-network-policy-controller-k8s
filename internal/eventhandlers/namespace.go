@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // NewEnqueueRequestForNamespaceEvent construct enqueueRequestsForNamespaceEvent
@@ -35,13 +36,13 @@ type enqueueRequestForNamespaceEvent struct {
 	policyResolver  resolvers.PolicyReferenceResolver
 }
 
-func (h *enqueueRequestForNamespaceEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForNamespaceEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	ns := event.Object.(*corev1.Namespace)
 	h.logger.V(1).Info("Handling create event", "namespace", k8s.NamespacedName(ns))
 	h.enqueueReferredPolicies(ctx, q, ns, nil)
 }
 
-func (h *enqueueRequestForNamespaceEvent) Update(ctx context.Context, event event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForNamespaceEvent) Update(ctx context.Context, event event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	nsNew := event.ObjectNew.(*corev1.Namespace)
 	nsOld := event.ObjectOld.(*corev1.Namespace)
 
@@ -53,17 +54,17 @@ func (h *enqueueRequestForNamespaceEvent) Update(ctx context.Context, event even
 	h.enqueueReferredPolicies(ctx, q, nsNew, nsOld)
 }
 
-func (h *enqueueRequestForNamespaceEvent) Delete(ctx context.Context, event event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForNamespaceEvent) Delete(ctx context.Context, event event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	ns := event.Object.(*corev1.Namespace)
 	h.logger.V(1).Info("Handling delete event", "namespace", k8s.NamespacedName(ns))
 	h.enqueueReferredPolicies(ctx, q, ns, nil)
 }
 
-func (h *enqueueRequestForNamespaceEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForNamespaceEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	return
 }
 
-func (h *enqueueRequestForNamespaceEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, ns, nsOld *corev1.Namespace) {
+func (h *enqueueRequestForNamespaceEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.TypedRateLimitingInterface[reconcile.Request], ns, nsOld *corev1.Namespace) {
 	referredPolicies, err := h.policyResolver.GetReferredPoliciesForNamespace(ctx, ns, nsOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "namespace", k8s.NamespacedName(ns))

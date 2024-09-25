@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // NewEnqueueRequestForServiceEvent constructs a new enqueueRequestForServiceEvent
@@ -50,13 +51,13 @@ type enqueueRequestForServiceEvent struct {
 	logger          logr.Logger
 }
 
-func (h *enqueueRequestForServiceEvent) Create(ctx context.Context, createEvent event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForServiceEvent) Create(ctx context.Context, createEvent event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	serviceNew := createEvent.Object.(*corev1.Service)
 	h.logger.V(1).Info("handling service create event", "service", k8s.NamespacedName(serviceNew))
 	h.enqueueReferredPolicies(ctx, q, serviceNew, nil)
 }
 
-func (h *enqueueRequestForServiceEvent) Update(ctx context.Context, updateEvent event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForServiceEvent) Update(ctx context.Context, updateEvent event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	serviceOld := updateEvent.ObjectOld.(*corev1.Service)
 	serviceNew := updateEvent.ObjectNew.(*corev1.Service)
 
@@ -68,17 +69,17 @@ func (h *enqueueRequestForServiceEvent) Update(ctx context.Context, updateEvent 
 	h.enqueueReferredPolicies(ctx, q, serviceNew, serviceOld)
 }
 
-func (h *enqueueRequestForServiceEvent) Delete(ctx context.Context, deleteEvent event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForServiceEvent) Delete(ctx context.Context, deleteEvent event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	serviceNew := deleteEvent.Object.(*corev1.Service)
 	h.logger.V(1).Info("handling service delete event", "service", k8s.NamespacedName(serviceNew))
 	h.enqueueReferredPolicies(ctx, q, serviceNew, nil)
 }
 
-func (h *enqueueRequestForServiceEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForServiceEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	return
 }
 
-func (h *enqueueRequestForServiceEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, svc *corev1.Service, svcOld *corev1.Service) {
+func (h *enqueueRequestForServiceEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.TypedRateLimitingInterface[reconcile.Request], svc *corev1.Service, svcOld *corev1.Service) {
 	referredPolicies, err := h.policyResolver.GetReferredPoliciesForService(ctx, svc, svcOld)
 	if err != nil {
 		h.logger.Error(err, "Unable to get referred policies", "service", k8s.NamespacedName(svc))
