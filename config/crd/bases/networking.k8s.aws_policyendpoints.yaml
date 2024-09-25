@@ -73,6 +73,7 @@ spec:
                             format: int32
                             type: integer
                           protocol:
+                            default: TCP
                             description: Protocol specifies the transport protocol,
                               default TCP
                             type: string
@@ -116,6 +117,7 @@ spec:
                             format: int32
                             type: integer
                           protocol:
+                            default: TCP
                             description: Protocol specifies the transport protocol,
                               default TCP
                             type: string
