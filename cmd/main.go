@@ -78,7 +78,16 @@ func main() {
 		setupLog.Error(err, "unable to build REST config")
 		os.Exit(1)
 	}
-	clientSet, err := kubernetes.NewForConfig(restCFG)
+
+	clientSetRestConfig, err := config.BuildRestConfig(controllerCFG.RuntimeConfig)
+	if err != nil {
+		setupLog.Error(err, "unable to build REST config")
+		os.Exit(1)
+	}
+	clientSetRestConfig.AcceptContentTypes = "application/vnd.kubernetes.protobuf,application/json"
+	clientSetRestConfig.ContentType = "application/vnd.kubernetes.protobuf"
+
+	clientSet, err := kubernetes.NewForConfig(clientSetRestConfig)
 	if err != nil {
 		setupLog.Error(err, "unable to obtain clientSet")
 		os.Exit(1)
