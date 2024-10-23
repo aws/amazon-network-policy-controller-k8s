@@ -51,13 +51,13 @@ type enqueueRequestForPolicyEvent struct {
 	logger                       logr.Logger
 }
 
-func (h *enqueueRequestForPolicyEvent) Create(_ context.Context, e event.CreateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Create(_ context.Context, e event.CreateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	policy := e.Object.(*networking.NetworkPolicy)
 	h.logger.V(1).Info("Handling create event", "policy", k8s.NamespacedName(policy))
 	h.enqueuePolicy(queue, policy, 0)
 }
 
-func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateEvent, queue workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateEvent, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	oldPolicy := e.ObjectOld.(*networking.NetworkPolicy)
 	newPolicy := e.ObjectNew.(*networking.NetworkPolicy)
 
@@ -69,19 +69,19 @@ func (h *enqueueRequestForPolicyEvent) Update(_ context.Context, e event.UpdateE
 	h.enqueuePolicy(queue, newPolicy, 0)
 }
 
-func (h *enqueueRequestForPolicyEvent) Delete(_ context.Context, e event.DeleteEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Delete(_ context.Context, e event.DeleteEvent, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	policy := e.Object.(*networking.NetworkPolicy)
 	h.logger.V(1).Info("Handling delete event", "policy", k8s.NamespacedName(policy))
 	h.policyTracker.RemovePolicy(policy)
 }
 
-func (h *enqueueRequestForPolicyEvent) Generic(_ context.Context, e event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPolicyEvent) Generic(_ context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	policy := e.Object.(*networking.NetworkPolicy)
 	h.logger.V(1).Info("Handling generic event", "policy", k8s.NamespacedName(policy))
 	h.enqueuePolicy(q, policy, h.podUpdateBatchPeriodDuration)
 }
 
-func (h *enqueueRequestForPolicyEvent) enqueuePolicy(queue workqueue.RateLimitingInterface, policy *networking.NetworkPolicy, addAfter time.Duration) {
+func (h *enqueueRequestForPolicyEvent) enqueuePolicy(queue workqueue.TypedRateLimitingInterface[reconcile.Request], policy *networking.NetworkPolicy, addAfter time.Duration) {
 	h.policyTracker.UpdatePolicy(policy)
 	queue.AddAfter(reconcile.Request{
 		NamespacedName: types.NamespacedName{

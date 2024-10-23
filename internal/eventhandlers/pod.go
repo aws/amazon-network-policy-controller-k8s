@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // NewEnqueueRequestForPodEvent constructs new enqueueRequestsForPodEvent
@@ -50,13 +51,13 @@ type enqueueRequestForPodEvent struct {
 	logger          logr.Logger
 }
 
-func (h *enqueueRequestForPodEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	podNew := event.Object.(*corev1.Pod)
 	h.logger.V(1).Info("Handling pod create event", "pod", k8s.NamespacedName(podNew))
 	h.enqueueReferredPolicies(ctx, q, podNew, nil)
 }
 
-func (h *enqueueRequestForPodEvent) Update(ctx context.Context, e event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Update(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	podOld := e.ObjectOld.(*corev1.Pod)
 	podNew := e.ObjectNew.(*corev1.Pod)
 
@@ -70,17 +71,17 @@ func (h *enqueueRequestForPodEvent) Update(ctx context.Context, e event.UpdateEv
 	h.enqueueReferredPolicies(ctx, q, podNew, podOld)
 }
 
-func (h *enqueueRequestForPodEvent) Delete(ctx context.Context, e event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Delete(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	pod := e.Object.(*corev1.Pod)
 	h.logger.V(1).Info("Handling delete event", "pod", k8s.NamespacedName(pod))
 	h.enqueueReferredPolicies(ctx, q, pod, nil)
 }
 
-func (h *enqueueRequestForPodEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.RateLimitingInterface) {
+func (h *enqueueRequestForPodEvent) Generic(_ context.Context, _ event.GenericEvent, _ workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	return
 }
 
-func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.RateLimitingInterface, pod *corev1.Pod, podOld *corev1.Pod) {
+func (h *enqueueRequestForPodEvent) enqueueReferredPolicies(ctx context.Context, _ workqueue.TypedRateLimitingInterface[reconcile.Request], pod *corev1.Pod, podOld *corev1.Pod) {
 	if len(k8s.GetPodIP(pod)) == 0 {
 		h.logger.V(1).Info("Pod does not have an IP yet", "pod", k8s.NamespacedName(pod))
 		return

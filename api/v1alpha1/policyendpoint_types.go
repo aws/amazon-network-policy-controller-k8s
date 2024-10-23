@@ -36,6 +36,7 @@ type NetworkAddress string
 // Port contains information about the transport port/protocol
 type Port struct {
 	// Protocol specifies the transport protocol, default TCP
+	// +default="TCP"
 	Protocol *corev1.Protocol `json:"protocol,omitempty"`
 
 	// Port specifies the numerical port for the protocol. If empty applies to all ports
