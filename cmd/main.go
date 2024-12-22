@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -70,6 +72,18 @@ func main() {
 		infoLogger.Error(err, "unable to load controller config")
 		os.Exit(1)
 	}
+
+	if controllerCFG.EnableProfiling {
+		infoLogger.Info("enable profiling true")
+		go func() {
+			infoLogger.Info("Starting pprof server at :7443/debug/pprof")
+			if err := http.ListenAndServe(":7443", nil); err != nil {
+				infoLogger.Error(err, "failed to start pprof server")
+				os.Exit(1)
+			}
+		}()
+	}
+
 	ctrlLogger := getLoggerWithLogLevel(controllerCFG.LogLevel)
 	ctrl.SetLogger(ctrlLogger)
 
