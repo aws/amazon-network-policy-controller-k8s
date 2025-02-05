@@ -18,15 +18,15 @@ package main
 
 import (
 	"context"
-	"os"
-
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap/zapcore"
-
+	"net/http"
+	"os"
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	_ "net/http/pprof"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -148,6 +148,15 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+
+	if controllerCFG.EnableGoProfiling {
+		go func() {
+			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+				setupLog.Error(err, "Error starting HTTP server")
+			}
+		}()
+	}
+
 	setupLog.Info("starting controller manager")
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running controller manager")

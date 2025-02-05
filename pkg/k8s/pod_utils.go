@@ -3,6 +3,7 @@ package k8s
 import (
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -42,4 +43,48 @@ func LookupContainerPortAndName(pod *corev1.Pod, port intstr.IntOrString, protoc
 		return port.IntVal, "", nil
 	}
 	return 0, "", errors.Errorf("unable to find port %s on pod %s", port.String(), NamespacedName(pod))
+}
+
+// StripDownPodTransformFunc is a transform function that strips down pod to reduce memory usage.
+// see details in [stripDownPodObject].
+func StripDownPodTransformFunc(obj interface{}) (interface{}, error) {
+	if pod, ok := obj.(*corev1.Pod); ok {
+		return stripDownPodObject(pod), nil
+	}
+	return obj, nil
+}
+
+// stripDownPodObject provides an stripDown version of pod to reduce memory usage.
+// NOTE: if the controller needs to refer to more pod fields in the future
+//
+//	these fields need to be added to the cache
+func stripDownPodObject(pod *corev1.Pod) *corev1.Pod {
+	pod.ObjectMeta = metav1.ObjectMeta{
+		Name:              pod.Name,
+		Namespace:         pod.Namespace,
+		UID:               pod.UID,
+		DeletionTimestamp: pod.DeletionTimestamp,
+		Labels:            pod.Labels,
+		Annotations:       pod.Annotations,
+		ResourceVersion:   pod.ResourceVersion,
+		Finalizers:        pod.Finalizers,
+	}
+	// Extract only the Name and Ports in spec.Container
+	var strippedContainers []corev1.Container
+	for _, container := range pod.Spec.Containers {
+		strippedContainers = append(strippedContainers, corev1.Container{
+			Name:  container.Name,
+			Ports: container.Ports,
+		})
+	}
+	pod.Spec = corev1.PodSpec{
+		Containers: strippedContainers,
+	}
+	pod.Status = corev1.PodStatus{
+		HostIP:  pod.Status.HostIP,
+		HostIPs: pod.Status.HostIPs,
+		PodIP:   pod.Status.PodIP,
+		PodIPs:  pod.Status.PodIPs,
+	}
+	return pod
 }

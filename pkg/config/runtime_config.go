@@ -1,6 +1,10 @@
 package config
 
 import (
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	networkingv1 "k8s.io/api/networking/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -82,15 +86,36 @@ func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 	return restCFG, nil
 }
 
+// BuildCacheOptions returns a cache.Options struct for this controller.
+func BuildCacheOptions() cache.Options {
+	cacheOptions := cache.Options{
+		ReaderFailOnMissingInformer: true,
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Pod{}: {
+				// the controller does not mutate pod objects, thus we can safely disable DeepCopy for pod objects to optimize memory usage.
+				UnsafeDisableDeepCopy: awssdk.Bool(true),
+				Transform:             k8s.StripDownPodTransformFunc,
+			},
+			&corev1.Service{}: {
+				//the controller does not mutate service objects, thus we can safely disable DeepCopy for service objects to optimize memory usage.
+				UnsafeDisableDeepCopy: awssdk.Bool(true),
+				Transform:             k8s.StripDownServiceTransformFunc,
+			},
+			&corev1.Namespace{}:           {},
+			&networkingv1.NetworkPolicy{}: {},
+			&corev1.Endpoints{}:           {},
+		},
+	}
+	return cacheOptions
+}
+
 // BuildRuntimeOptions builds the options for the controller runtime based on config
 func BuildRuntimeOptions(rtCfg RuntimeConfig, scheme *runtime.Scheme) ctrl.Options {
-	// if DefaultNamespaces in Options is not set, cache will watch for all namespaces
-	cacheOptions := cache.Options{}
+	cacheOptions := BuildCacheOptions()
+	// if WatchNamespace in Options is not set, cache will watch for all namespaces
 	if rtCfg.WatchNamespace != corev1.NamespaceAll {
-		cacheOptions = cache.Options{
-			DefaultNamespaces: map[string]cache.Config{
-				rtCfg.WatchNamespace: {},
-			},
+		cacheOptions.DefaultNamespaces = map[string]cache.Config{
+			rtCfg.WatchNamespace: {},
 		}
 	}
 	return ctrl.Options{
