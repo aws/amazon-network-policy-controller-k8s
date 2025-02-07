@@ -55,9 +55,7 @@ func StripDownPodTransformFunc(obj interface{}) (interface{}, error) {
 }
 
 // stripDownPodObject provides an stripDown version of pod to reduce memory usage.
-// NOTE: if the controller needs to refer to more pod fields in the future
-//
-//	these fields need to be added to the cache
+// NOTE: if the controller needs to refer to more pod fields in the future these fields need to be added to the cache
 func stripDownPodObject(pod *corev1.Pod) *corev1.Pod {
 	pod.ObjectMeta = metav1.ObjectMeta{
 		Name:              pod.Name,

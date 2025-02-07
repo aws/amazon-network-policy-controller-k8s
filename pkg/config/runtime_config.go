@@ -1,11 +1,12 @@
 package config
 
 import (
+	"time"
+
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
