@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
-	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -70,6 +69,7 @@ func (c *RuntimeConfig) BindFlags(fs *pflag.FlagSet) {
 }
 
 // BuildRestConfig builds the REST config for the controller runtime
+// Note: the ByObject opts should include all the objects that the controller watches for
 func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 	var restCFG *rest.Config
 	var err error
@@ -93,18 +93,15 @@ func BuildCacheOptions() cache.Options {
 		ReaderFailOnMissingInformer: true,
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Pod{}: {
-				// the controller does not mutate pod objects, thus we can safely disable DeepCopy for pod objects to optimize memory usage.
-				UnsafeDisableDeepCopy: awssdk.Bool(true),
-				Transform:             k8s.StripDownPodTransformFunc,
+				Transform: k8s.StripDownPodTransformFunc,
 			},
 			&corev1.Service{}: {
-				//the controller does not mutate service objects, thus we can safely disable DeepCopy for service objects to optimize memory usage.
-				UnsafeDisableDeepCopy: awssdk.Bool(true),
-				Transform:             k8s.StripDownServiceTransformFunc,
+				Transform: k8s.StripDownServiceTransformFunc,
 			},
 			&corev1.Namespace{}:           {},
 			&networkingv1.NetworkPolicy{}: {},
 			&corev1.Endpoints{}:           {},
+			&corev1.ConfigMap{}:           {},
 		},
 	}
 	return cacheOptions
