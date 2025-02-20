@@ -3,6 +3,11 @@ package config
 import (
 	"time"
 
+	"github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	networkingv1 "k8s.io/api/networking/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -65,6 +70,7 @@ func (c *RuntimeConfig) BindFlags(fs *pflag.FlagSet) {
 }
 
 // BuildRestConfig builds the REST config for the controller runtime
+// Note: the ByObject opts should include all the objects that the controller watches for
 func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 	var restCFG *rest.Config
 	var err error
@@ -82,15 +88,33 @@ func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 	return restCFG, nil
 }
 
+// BuildCacheOptions returns a cache.Options struct for this controller.
+func BuildCacheOptions() cache.Options {
+	cacheOptions := cache.Options{
+		ReaderFailOnMissingInformer: true,
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Pod{}: {
+				Transform: k8s.StripDownPodTransformFunc,
+			},
+			&corev1.Service{}: {
+				Transform: k8s.StripDownServiceTransformFunc,
+			},
+			&corev1.Namespace{}:           {},
+			&networkingv1.NetworkPolicy{}: {},
+			&corev1.Endpoints{}:           {},
+			&v1alpha1.PolicyEndpoint{}:    {},
+		},
+	}
+	return cacheOptions
+}
+
 // BuildRuntimeOptions builds the options for the controller runtime based on config
 func BuildRuntimeOptions(rtCfg RuntimeConfig, scheme *runtime.Scheme) ctrl.Options {
-	// if DefaultNamespaces in Options is not set, cache will watch for all namespaces
-	cacheOptions := cache.Options{}
+	cacheOptions := BuildCacheOptions()
+	// if WatchNamespace in Options is not set, cache will watch for all namespaces
 	if rtCfg.WatchNamespace != corev1.NamespaceAll {
-		cacheOptions = cache.Options{
-			DefaultNamespaces: map[string]cache.Config{
-				rtCfg.WatchNamespace: {},
-			},
+		cacheOptions.DefaultNamespaces = map[string]cache.Config{
+			rtCfg.WatchNamespace: {},
 		}
 	}
 	return ctrl.Options{
