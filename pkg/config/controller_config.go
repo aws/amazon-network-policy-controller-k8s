@@ -11,12 +11,14 @@ const (
 	flagMaxConcurrentReconciles      = "max-concurrent-reconciles"
 	flagEnableConfigMapCheck         = "enable-configmap-check"
 	flagEndpointChunkSize            = "endpoint-chunk-size"
+	flagEnableGoProfiling            = "enable-goprofiling"
 	defaultLogLevel                  = "info"
 	defaultMaxConcurrentReconciles   = 3
 	defaultEndpointsChunkSize        = 200
 	defaultEnableConfigMapCheck      = true
 	flagPodUpdateBatchPeriodDuration = "pod-update-batch-period-duration"
 	defaultBatchPeriodDuration       = 1 * time.Second
+	defaultEnableGoProfiling         = false
 )
 
 // ControllerConfig contains the controller configuration
@@ -33,6 +35,8 @@ type ControllerConfig struct {
 	PodUpdateBatchPeriodDuration time.Duration
 	// Configurations for the Controller Runtime
 	RuntimeConfig RuntimeConfig
+	// EnableGoProfiling enables the goprofiling for dev purpose
+	EnableGoProfiling bool
 }
 
 func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
@@ -46,5 +50,7 @@ func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
 		"Enable checking the configmap for starting the network policy controller")
 	fs.DurationVar(&cfg.PodUpdateBatchPeriodDuration, flagPodUpdateBatchPeriodDuration, defaultBatchPeriodDuration, ""+
 		"Duration between batch updates of pods")
+	fs.BoolVar(&cfg.EnableGoProfiling, flagEnableGoProfiling, defaultEnableGoProfiling,
+		"Enable goprofiling for develop purpose")
 	cfg.RuntimeConfig.BindFlags(fs)
 }
