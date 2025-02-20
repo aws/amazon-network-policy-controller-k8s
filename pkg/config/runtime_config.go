@@ -3,6 +3,7 @@ package config
 import (
 	"time"
 
+	"github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -101,7 +102,7 @@ func BuildCacheOptions() cache.Options {
 			&corev1.Namespace{}:           {},
 			&networkingv1.NetworkPolicy{}: {},
 			&corev1.Endpoints{}:           {},
-			&corev1.ConfigMap{}:           {},
+			&v1alpha1.PolicyEndpoint{}:    {},
 		},
 	}
 	return cacheOptions

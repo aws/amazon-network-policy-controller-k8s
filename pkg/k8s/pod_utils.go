@@ -68,7 +68,7 @@ func stripDownPodObject(pod *corev1.Pod) *corev1.Pod {
 		Finalizers:        pod.Finalizers,
 	}
 	// Extract only the Name and Ports in spec.Container
-	var strippedContainers []corev1.Container
+	strippedContainers := make([]corev1.Container, 0, len(pod.Spec.Containers))
 	for _, container := range pod.Spec.Containers {
 		strippedContainers = append(strippedContainers, corev1.Container{
 			Name:  container.Name,
