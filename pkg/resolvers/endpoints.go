@@ -351,7 +351,6 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	for _, pod := range podList.Items {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) == 0 {
-			r.logger.Info("pod IP not assigned yet", "pod", k8s.NamespacedName(&pod))
 			continue
 		}
 
@@ -476,7 +475,7 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(ctx context.Context, s
 		if portVal, err := k8s.LookupListenPortFromPodSpec(svc, &podList.Items[i], *port, protocol); err == nil {
 			return portVal, nil
 		} else {
-			r.logger.Info("The pod doesn't have port matched", "err", err, "pod", podList.Items[i])
+			r.logger.V(1).Info("The pod doesn't have port matched", "err", err, "pod", podList.Items[i])
 		}
 	}
 	return 0, errors.Errorf("unable to find matching service listen port %s for service %s", port.String(), k8s.NamespacedName(svc))

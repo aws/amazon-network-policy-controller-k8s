@@ -177,7 +177,6 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 		pe.Spec.Egress = combineRulesEndpoints(pe.Spec.Egress)
 		newPEs = append(newPEs, pe)
 	}
-	m.logger.Info("manager processed policy endpoints to consolidate rules", "preLen", len(pes), "postLen", len(newPEs), "newPEs", newPEs)
 	return newPEs
 }
 
