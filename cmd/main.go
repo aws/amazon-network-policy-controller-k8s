@@ -44,6 +44,7 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/config"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/prometheus"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/configmap"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/version"
 	//+kubebuilder:scaffold:imports
@@ -102,6 +103,9 @@ func main() {
 	setupLog.Info("Checking args for PE chunk size", "PEChunkSize", controllerCFG.EndpointChunkSize)
 	setupLog.Info("Checking args for policy batch time", "NPBatchTime", controllerCFG.PodUpdateBatchPeriodDuration)
 	setupLog.Info("Checking args for reconciler count", "ReconcilerCount", controllerCFG.MaxConcurrentReconciles)
+
+	setupLog.Info("Register metrics in promethus")
+	prometheus.RegisterPrometheus()
 
 	if controllerCFG.EnableConfigMapCheck {
 		var cancelFn context.CancelFunc
