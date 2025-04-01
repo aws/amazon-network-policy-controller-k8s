@@ -101,7 +101,6 @@ func BuildCacheOptions() cache.Options {
 			},
 			&corev1.Namespace{}:           {},
 			&networkingv1.NetworkPolicy{}: {},
-			&corev1.Endpoints{}:           {},
 			&v1alpha1.PolicyEndpoint{}:    {},
 		},
 	}
