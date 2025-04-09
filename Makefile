@@ -175,7 +175,7 @@ $(MOCKGEN): $(LOCALBIN)
 GO_IMAGE_TAG=$(shell cat .go-version)
 BUILD_IMAGE=public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
 BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
-GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3
+GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-10
 .PHONY: docker-buildx
 docker-buildx: test
 	for platform in $(ARCHS); do \
