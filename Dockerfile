@@ -34,7 +34,7 @@ RUN GIT_VERSION=$(git describe --tags --always) && \
 FROM $BASE_IMAGE
 
 WORKDIR /
-COPY --from=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.15.0-eks-1-27-3 /go-runner /usr/local/bin/go-runner
+COPY --from=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-10 /go-runner /usr/local/bin/go-runner
 COPY --from=builder /workspace/controller .
 USER 65532:65532
 
