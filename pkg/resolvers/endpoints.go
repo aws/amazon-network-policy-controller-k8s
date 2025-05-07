@@ -7,6 +7,7 @@ import (
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/prometheus"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
@@ -44,14 +45,17 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 	[]policyinfo.EndpointInfo, []policyinfo.PodEndpoint, error) {
 	ingressEndpoints, err := r.computeIngressEndpoints(ctx, policy)
 	if err != nil {
+		prometheus.ComputeIngressEndpointsErrCnt.Inc()
 		return nil, nil, nil, err
 	}
 	egressEndpoints, err := r.computeEgressEndpoints(ctx, policy)
 	if err != nil {
+		prometheus.ComputeEgressEndpointsErrCnt.Inc()
 		return nil, nil, nil, err
 	}
 	podSelectorEndpoints, err := r.computePodSelectorEndpoints(ctx, policy)
 	if err != nil {
+		prometheus.ComputePodEndpointsErrCnt.Inc()
 		return nil, nil, nil, err
 	}
 	r.logger.Info("Resolved endpoints", "policy", k8s.NamespacedName(policy), "ingress", len(ingressEndpoints), "egress",
