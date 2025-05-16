@@ -26,18 +26,20 @@ type EndpointsResolver interface {
 }
 
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
-func NewEndpointsResolver(k8sClient client.Client, logger logr.Logger) *defaultEndpointsResolver {
+func NewEndpointsResolver(k8sClient client.Client, listPageSize int, logger logr.Logger) *defaultEndpointsResolver {
 	return &defaultEndpointsResolver{
-		k8sClient: k8sClient,
-		logger:    logger,
+		k8sClient:    k8sClient,
+		listPageSize: listPageSize,
+		logger:       logger,
 	}
 }
 
 var _ EndpointsResolver = (*defaultEndpointsResolver)(nil)
 
 type defaultEndpointsResolver struct {
-	k8sClient client.Client
-	logger    logr.Logger
+	k8sClient    client.Client
+	listPageSize int
+	logger       logr.Logger
 }
 
 func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo,
@@ -101,21 +103,47 @@ func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, p
 	return egressEndpoints, nil
 }
 
+// listPodsWithPagination lists pods with pagination to avoid large memory usage and timeout issue from api server side
+func (r *defaultEndpointsResolver) listPodsWithPagination(ctx context.Context, selector labels.Selector, namespace string) ([]corev1.Pod, error) {
+	var allPods []corev1.Pod
+	continueToken := ""
+
+	for {
+		podList := &corev1.PodList{}
+		if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+			LabelSelector: selector,
+			Namespace:     namespace,
+			Limit:         int64(r.listPageSize),
+			Continue:      continueToken,
+		}); err != nil {
+			r.logger.Info("Unable to List Pods", "err", err)
+			return nil, err
+		}
+
+		allPods = append(allPods, podList.Items...)
+		continueToken = podList.Continue
+
+		if continueToken == "" {
+			break
+		}
+	}
+
+	return allPods, nil
+}
+
 func (r *defaultEndpointsResolver) computePodSelectorEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.PodEndpoint, error) {
 	var podEndpoints []policyinfo.PodEndpoint
 	podSelector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to get pod selector")
 	}
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
-		LabelSelector: podSelector,
-		Namespace:     policy.Namespace,
-	}); err != nil {
-		r.logger.Info("Unable to List Pods", "err", err)
+
+	pods, err := r.listPodsWithPagination(ctx, podSelector, policy.Namespace)
+	if err != nil {
 		return nil, err
 	}
-	for _, pod := range podList.Items {
+
+	for _, pod := range pods {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) > 0 {
 			podEndpoints = append(podEndpoints, policyinfo.PodEndpoint{
@@ -212,18 +240,14 @@ func (r *defaultEndpointsResolver) resolveNetworkPeers(ctx context.Context, poli
 }
 
 func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, policyNamespace string, policyPodSelector *metav1.LabelSelector, ports []networking.NetworkPolicyPort) []policyinfo.Port {
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
-		LabelSelector: r.createPodLabelSelector(policyPodSelector),
-		Namespace:     policyNamespace,
-	}); err != nil {
-		r.logger.Info("Unable to List Pods", "err", err)
+	pods, err := r.listPodsWithPagination(ctx, r.createPodLabelSelector(policyPodSelector), policyNamespace)
+	if err != nil {
 		return nil
 	}
 
-	r.logger.V(2).Info("list pods for ingress", "podList", *podList, "namespace", policyNamespace, "selector", *policyPodSelector)
+	r.logger.V(2).Info("list pods for ingress", "podsCount", len(pods), "namespace", policyNamespace, "selector", *policyPodSelector)
 	var portList []policyinfo.Port
-	for _, pod := range podList.Items {
+	for _, pod := range pods {
 		portList = append(portList, r.getPortList(pod, ports)...)
 		r.logger.Info("Got ingress port from pod", "pod", types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}.String())
 	}
@@ -338,17 +362,13 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	}
 
 	// populate src pods for ingress and dst pods for egress
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
-		LabelSelector: r.createPodLabelSelector(ls),
-		Namespace:     namespace,
-	}); err != nil {
-		r.logger.Info("Unable to List Pods", "err", err)
+	pods, err := r.listPodsWithPagination(ctx, r.createPodLabelSelector(ls), namespace)
+	if err != nil {
 		return nil
 	}
-	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", ls.String())
+	r.logger.V(1).Info("Got pods for label selector", "count", len(pods), "selector", ls.String())
 
-	for _, pod := range podList.Items {
+	for _, pod := range pods {
 		podIP := k8s.GetPodIP(&pod)
 		if len(podIP) == 0 {
 			continue
@@ -463,19 +483,17 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(ctx context.Context, s
 	if err != nil {
 		return 0, err
 	}
-	podList := &corev1.PodList{}
-	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
-		LabelSelector: podSelector,
-		Namespace:     svc.Namespace,
-	}); err != nil {
-		r.logger.Info("Unable to List Pods", "err", err)
+
+	pods, err := r.listPodsWithPagination(ctx, podSelector, svc.Namespace)
+	if err != nil {
 		return 0, err
 	}
-	for i := range podList.Items {
-		if portVal, err := k8s.LookupListenPortFromPodSpec(svc, &podList.Items[i], *port, protocol); err == nil {
+
+	for i := range pods {
+		if portVal, err := k8s.LookupListenPortFromPodSpec(svc, &pods[i], *port, protocol); err == nil {
 			return portVal, nil
 		} else {
-			r.logger.V(1).Info("The pod doesn't have port matched", "err", err, "pod", podList.Items[i])
+			r.logger.V(1).Info("The pod doesn't have port matched", "err", err, "pod", pods[i])
 		}
 	}
 	return 0, errors.Errorf("unable to find matching service listen port %s for service %s", port.String(), k8s.NamespacedName(svc))
