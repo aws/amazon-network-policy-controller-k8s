@@ -102,6 +102,7 @@ func main() {
 	setupLog.Info("Checking args for PE chunk size", "PEChunkSize", controllerCFG.EndpointChunkSize)
 	setupLog.Info("Checking args for policy batch time", "NPBatchTime", controllerCFG.PodUpdateBatchPeriodDuration)
 	setupLog.Info("Checking args for reconciler count", "ReconcilerCount", controllerCFG.MaxConcurrentReconciles)
+	setupLog.Info("Checking args for k8s list call page size", "ListPageSize", controllerCFG.ListPageSize)
 
 	if controllerCFG.EnableConfigMapCheck {
 		var cancelFn context.CancelFunc
@@ -129,7 +130,7 @@ func main() {
 	}
 
 	policyEndpointsManager := policyendpoints.NewPolicyEndpointsManager(mgr.GetClient(),
-		controllerCFG.EndpointChunkSize, ctrl.Log.WithName("endpoints-manager"))
+		controllerCFG.EndpointChunkSize, controllerCFG.ListPageSize, ctrl.Log.WithName("endpoints-manager"))
 	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
 	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
 		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("policy"))
