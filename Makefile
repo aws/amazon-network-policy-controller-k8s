@@ -81,8 +81,12 @@ test: manifests generate fmt vet envtest ## Run tests.
 
 ##@ Build
 
+.PHONY: prepare-embed
+prepare-embed: ## Prepare files for go:embed.
+	cp config/crd/bases/*.yaml internal/controllers/
+
 .PHONY: build
-build: manifests generate fmt vet ## Build controller binary.
+build: prepare-embed manifests generate fmt vet ## Build controller binary.
 	go build -o bin/controller cmd/main.go
 
 .PHONY: run

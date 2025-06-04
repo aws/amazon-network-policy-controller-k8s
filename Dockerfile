@@ -20,6 +20,7 @@ COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY pkg/ pkg/
 COPY internal/ internal/
+COPY config/crd/bases/ internal/controllers/
 
 # Version package for passing the ldflags
 # TODO: change this to network controller's version
