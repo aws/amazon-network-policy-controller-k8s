@@ -135,21 +135,18 @@ func main() {
 	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
 	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
 		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("policy"))
+	crdController := controllers.NewCRDReconciler(mgr.GetClient(), ctrl.Log.WithName("controllers").WithName("crd"))
 	if enableNetworkPolicyController {
 		setupLog.Info("Network Policy controller is enabled, starting watches")
 		if err := policyController.SetupWithManager(ctx, mgr); err != nil {
 			setupLog.Error(err, "Unable to setup network policy controller")
 			os.Exit(1)
 		}
-	}
-
-	crdController := controllers.NewCRDReconciler(mgr.GetClient(), ctrl.Log.WithName("controllers").WithName("crd"))
-	if err := crdController.SetupWithManager(mgr); err != nil {
-		for gvk := range scheme.AllKnownTypes() {
-			setupLog.Info("Registered GVK", "GVK", gvk)
+		setupLog.Info("starting watch policy endpoint crd...")
+		if err := crdController.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Unable to setup CRD controller")
+			os.Exit(1)
 		}
-		setupLog.Error(err, "Unable to setup CRD controller")
-		os.Exit(1)
 	}
 
 	//+kubebuilder:scaffold:builder
