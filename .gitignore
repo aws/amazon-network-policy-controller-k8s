@@ -7,7 +7,6 @@
 bin
 testbin/*
 Dockerfile.cross
-internal/controllers/*.yaml
 
 # Test binary, build with `go test -c`
 *.test
