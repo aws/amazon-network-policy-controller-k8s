@@ -33,7 +33,7 @@ import (
 
 const policyendpointsCrdName = "policyendpoints.networking.k8s.aws"
 
-//go:embed networking.k8s.aws_policyendpoints.yaml
+//go:embed crds.yaml
 var policyEndpointsCrd string
 
 func decodePolicyEndpointsCrd() (*apiextensionsv1.CustomResourceDefinition, error) {

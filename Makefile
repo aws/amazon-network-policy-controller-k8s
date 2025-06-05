@@ -83,7 +83,8 @@ test: manifests generate fmt vet envtest ## Run tests.
 
 .PHONY: prepare-embed
 prepare-embed: ## Prepare files for go:embed.
-	cp config/crd/bases/*.yaml internal/controllers/
+	cp charts/amazon-network-policy-controller-k8s/crds/crds.yaml internal/controllers/crds.yaml
+	sed -i 's/controller-gen.kubebuilder.io\/version: v[0-9]\+\.[0-9]\+\.[0-9]\+/controller-gen.kubebuilder.io\/version: v0.11.3/' internal/controllers/crds.yaml
 
 .PHONY: build
 build: prepare-embed manifests generate fmt vet ## Build controller binary.
@@ -181,13 +182,13 @@ BUILD_IMAGE=public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
 BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
 GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-10
 .PHONY: docker-buildx
-docker-buildx: test
+docker-buildx: prepare-embed test
 	for platform in $(ARCHS); do \
 		docker buildx build --platform=linux/$$platform -t $(IMG)-$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
 	done
 
 .PHONY: docker-buildx-no-test
-docker-buildx-no-test:
+docker-buildx-no-test: prepare-embed
 	for platform in $(ARCHS); do \
                 docker buildx build --platform=linux/$$platform -t $(IMG)_$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
         done
