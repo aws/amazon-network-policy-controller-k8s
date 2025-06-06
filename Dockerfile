@@ -20,6 +20,13 @@ COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY pkg/ pkg/
 COPY internal/ internal/
+COPY config/crd/bases/ internal/controllers/
+# Copy the CRD file
+COPY charts/amazon-network-policy-controller-k8s/crds/crds.yaml internal/controllers/crds.yaml
+
+# Short-term workaround for controller-gen version mismatch, should remove once the CRD removed from vpc-cni addon
+RUN sed -i 's/controller-gen.kubebuilder.io\/version: v[0-9]\+\.[0-9]\+\.[0-9]\+/controller-gen.kubebuilder.io\/version: v0.11.3/' internal/controllers/crds.yaml
+
 
 # Version package for passing the ldflags
 # TODO: change this to network controller's version

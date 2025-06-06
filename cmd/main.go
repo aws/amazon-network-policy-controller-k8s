@@ -31,6 +31,7 @@ import (
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -58,6 +59,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(policyinfo.AddToScheme(scheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -133,10 +135,16 @@ func main() {
 	finalizerManager := k8s.NewDefaultFinalizerManager(mgr.GetClient(), ctrl.Log.WithName("finalizer-manager"))
 	policyController := controllers.NewPolicyReconciler(mgr.GetClient(), policyEndpointsManager,
 		controllerCFG, finalizerManager, ctrl.Log.WithName("controllers").WithName("policy"))
+	crdController := controllers.NewCRDReconciler(mgr.GetClient(), ctrl.Log.WithName("controllers").WithName("crd"))
 	if enableNetworkPolicyController {
 		setupLog.Info("Network Policy controller is enabled, starting watches")
 		if err := policyController.SetupWithManager(ctx, mgr); err != nil {
 			setupLog.Error(err, "Unable to setup network policy controller")
+			os.Exit(1)
+		}
+		setupLog.Info("starting watch policy endpoint crd...")
+		if err := crdController.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Unable to setup CRD controller")
 			os.Exit(1)
 		}
 	}

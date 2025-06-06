@@ -15,6 +15,42 @@ rules:
   - list
   - watch
 - apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - crds
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - crds/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - extensions
+  resources:
+  - crds/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - networking.k8s.aws
   resources:
   - policyendpoints
