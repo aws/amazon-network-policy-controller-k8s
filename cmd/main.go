@@ -42,6 +42,7 @@ import (
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/internal/controllers"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/config"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/crd"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/policyendpoints"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/utils/configmap"
@@ -103,9 +104,9 @@ func main() {
 	setupLog.Info("Checking args for policy batch time", "NPBatchTime", controllerCFG.PodUpdateBatchPeriodDuration)
 	setupLog.Info("Checking args for reconciler count", "ReconcilerCount", controllerCFG.MaxConcurrentReconciles)
 
+	var cancelFn context.CancelFunc
+	ctx, cancelFn = context.WithCancel(ctx)
 	if controllerCFG.EnableConfigMapCheck {
-		var cancelFn context.CancelFunc
-		ctx, cancelFn = context.WithCancel(ctx)
 		setupLog.Info("Enable network policy controller based on configuration", "configmap", configmap.GetControllerConfigMapId())
 		configMapManager := config.NewConfigmapManager(configmap.GetControllerConfigMapId(),
 			clientSet, cancelFn, configmap.GetConfigmapCheckFn(), ctrl.Log.WithName("configmap-manager"))
@@ -120,6 +121,11 @@ func main() {
 		}
 	}
 
+	crdManager := crd.NewCRDManager(restCFG, setupLog.WithName("crd-manager"), cancelFn)
+	if err := crdManager.Start(ctx); err != nil {
+		setupLog.Error(err, "Unable to ensure CRDs exist")
+		os.Exit(1)
+	}
 	rtOpts := config.BuildRuntimeOptions(controllerCFG.RuntimeConfig, scheme)
 
 	mgr, err := ctrl.NewManager(restCFG, rtOpts)
