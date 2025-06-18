@@ -38,6 +38,8 @@ import (
 var crdsYAML string
 var desiredCRDs []*v1.CustomResourceDefinition
 
+const defaultMonitorInterval = 15 * time.Second
+
 func init() {
 	var err error
 	desiredCRDs, err = decodeCRDs()
@@ -67,6 +69,8 @@ func decodeCRDs() ([]*v1.CustomResourceDefinition, error) {
 
 	return crds, nil
 }
+
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create
 
 // CRDManager manages the lifecycle of CRDs
 type CRDManager interface {
@@ -126,8 +130,14 @@ func (m *defaultCRDManager) Start(ctx context.Context) error {
 }
 
 // monitorCRDs watches for CRD deletions and triggers controller restart if needed
+// Uses the default interval of 15 seconds
 func (m *defaultCRDManager) monitorCRDs(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Second)
+	m.monitorCRDsWithInterval(ctx, defaultMonitorInterval)
+}
+
+// monitorCRDsWithInterval watches for CRD deletions with a specified interval
+func (m *defaultCRDManager) monitorCRDsWithInterval(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
