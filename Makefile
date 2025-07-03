@@ -80,9 +80,14 @@ test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
 
 ##@ Build
+.PHONY: prepare-embed
+prepare-embed: ## Prepare files for go:embed.
+	cp charts/amazon-network-policy-controller-k8s/crds/crds.yaml pkg/crd/crds.yaml
+	sed -i 's/controller-gen.kubebuilder.io\/version: v[0-9]\+\.[0-9]\+\.[0-9]\+/controller-gen.kubebuilder.io\/version: v0.11.3/' pkg/crd/crds.yaml
+
 
 .PHONY: build
-build: manifests generate fmt vet ## Build controller binary.
+build: prepare-embed manifests generate fmt vet ## Build controller binary.
 	go build -o bin/controller cmd/main.go
 
 .PHONY: run
@@ -177,13 +182,13 @@ BUILD_IMAGE ?= public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
 BASE_IMAGE ?= public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
 GO_RUNNER_IMAGE ?= public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-latest
 .PHONY: docker-buildx
-docker-buildx: test
+docker-buildx: prepare-embed test
 	for platform in $(ARCHS); do \
 		docker buildx build --platform=linux/$$platform -t $(IMG)-$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg GORUNNER_IMAGE=$(GO_RUNNER_IMAGE) --build-arg $$platform --load .; \
 	done
 
 .PHONY: docker-buildx-no-test
-docker-buildx-no-test:
+docker-buildx-no-test: prepare-embed
 	for platform in $(ARCHS); do \
         docker buildx build --platform=linux/$$platform -t $(IMG)_$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg GORUNNER_IMAGE=$(GO_RUNNER_IMAGE) --build-arg $$platform --load .; \
     done
