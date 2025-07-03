@@ -2,7 +2,7 @@ module github.com/aws/amazon-network-policy-controller-k8s
 
 go 1.23.0
 
-toolchain go1.23.6
+toolchain go1.23.10
 
 require (
 	github.com/go-logr/logr v1.4.2

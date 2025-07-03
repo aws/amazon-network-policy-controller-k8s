@@ -178,20 +178,20 @@ $(MOCKGEN): $(LOCALBIN)
 	test -s $(MOCKGEN) || GOBIN=$(LOCALBIN) go install github.com/golang/mock/mockgen@v1.6.0
 
 GO_IMAGE_TAG=$(shell cat .go-version)
-BUILD_IMAGE=public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
-BASE_IMAGE=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
-GO_RUNNER_IMAGE=public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-10
+BUILD_IMAGE ?= public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
+BASE_IMAGE ?= public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
+GO_RUNNER_IMAGE ?= public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-latest
 .PHONY: docker-buildx
 docker-buildx: prepare-embed test
 	for platform in $(ARCHS); do \
-		docker buildx build --platform=linux/$$platform -t $(IMG)-$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
+		docker buildx build --platform=linux/$$platform -t $(IMG)-$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg GORUNNER_IMAGE=$(GO_RUNNER_IMAGE) --build-arg $$platform --load .; \
 	done
 
 .PHONY: docker-buildx-no-test
 docker-buildx-no-test: prepare-embed
 	for platform in $(ARCHS); do \
-                docker buildx build --platform=linux/$$platform -t $(IMG)_$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg $$platform --load .; \
-        done
+        docker buildx build --platform=linux/$$platform -t $(IMG)_$$platform --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg BUILD_IMAGE=$(BUILD_IMAGE) --build-arg GORUNNER_IMAGE=$(GO_RUNNER_IMAGE) --build-arg $$platform --load .; \
+    done
 
 # Check formatting of source code files without modification.
 check-format: FORMAT_FLAGS = -l
