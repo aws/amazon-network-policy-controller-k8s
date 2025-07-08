@@ -58,6 +58,9 @@ else
     echo "Skip disabling CP Network Policy controller. Tests will be evaulated against control plane NP controller"
 fi
 
+# Temporarily add CRD permissions to the ClusterRole
+kubectl patch clusterrole eks:network-policy-controller --type=json --patch '[{"op": "add", "path": "/rules/-", "value": {"apiGroups": ["apiextensions.k8s.io"], "resources": ["customresourcedefinitions"], "verbs": ["create", "get", "list", "watch"]}}]'
+
 run_cyclonus_tests
 
 if [[ $TEST_FAILED == "true" ]]; then
