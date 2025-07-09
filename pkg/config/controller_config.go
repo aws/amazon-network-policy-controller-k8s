@@ -12,10 +12,12 @@ const (
 	flagEnableConfigMapCheck         = "enable-configmap-check"
 	flagEndpointChunkSize            = "endpoint-chunk-size"
 	flagEnableGoProfiling            = "enable-goprofiling"
+	flagListPageSize                 = "list-page-size"
 	defaultLogLevel                  = "info"
 	defaultMaxConcurrentReconciles   = 3
 	defaultEndpointsChunkSize        = 200
 	defaultEnableConfigMapCheck      = true
+	defaultListPageSize              = 1000
 	flagPodUpdateBatchPeriodDuration = "pod-update-batch-period-duration"
 	defaultBatchPeriodDuration       = 1 * time.Second
 	defaultEnableGoProfiling         = false
@@ -37,6 +39,8 @@ type ControllerConfig struct {
 	RuntimeConfig RuntimeConfig
 	// EnableGoProfiling enables the goprofiling for dev purpose
 	EnableGoProfiling bool
+	// ListPageSize specifies the page size for k8s list calls
+	ListPageSize int
 }
 
 func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
@@ -52,5 +56,7 @@ func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
 		"Duration between batch updates of pods")
 	fs.BoolVar(&cfg.EnableGoProfiling, flagEnableGoProfiling, defaultEnableGoProfiling,
 		"Enable goprofiling for develop purpose")
+	fs.IntVar(&cfg.ListPageSize, flagListPageSize, defaultListPageSize,
+		"Page size for k8s list calls")
 	cfg.RuntimeConfig.BindFlags(fs)
 }

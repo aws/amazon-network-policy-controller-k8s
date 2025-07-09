@@ -29,8 +29,8 @@ type PolicyEndpointsManager interface {
 }
 
 // NewPolicyEndpointsManager constructs a new policyEndpointsManager
-func NewPolicyEndpointsManager(k8sClient client.Client, endpointChunkSize int, logger logr.Logger) *policyEndpointsManager {
-	endpointsResolver := resolvers.NewEndpointsResolver(k8sClient, logger.WithName("endpoints-resolver"))
+func NewPolicyEndpointsManager(k8sClient client.Client, endpointChunkSize int, listPageSize int, logger logr.Logger) *policyEndpointsManager {
+	endpointsResolver := resolvers.NewEndpointsResolver(k8sClient, listPageSize, logger.WithName("endpoints-resolver"))
 	return &policyEndpointsManager{
 		k8sClient:         k8sClient,
 		endpointsResolver: endpointsResolver,
