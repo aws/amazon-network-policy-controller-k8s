@@ -225,7 +225,7 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	var portList []policyinfo.Port
 	for _, pod := range podList.Items {
 		portList = append(portList, r.getPortList(pod, ports)...)
-		r.logger.Info("Got ingress port from pod", "pod", types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}.String())
+		r.logger.V(1).Info("Got ingress port from pod", "pod", types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}.String())
 	}
 
 	// since we pull ports from dst pods, we should deduplicate them
@@ -438,7 +438,7 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 			})
 		}
 		if len(ports) != len(portList) && len(portList) == 0 {
-			r.logger.Info("Couldn't find matching port for the service", "service", k8s.NamespacedName(&svc))
+			r.logger.V(1).Info("Couldn't find matching port for the service", "service", k8s.NamespacedName(&svc))
 			continue
 		}
 		networkPeers = append(networkPeers, policyinfo.EndpointInfo{
