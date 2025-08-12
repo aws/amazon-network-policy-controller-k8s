@@ -587,7 +587,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockClient := mock_client.NewMockClient(ctrl)
-			resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+			resolver := NewEndpointsResolver(mockClient, 1000, logr.New(&log.NullLogSink{}))
 
 			for _, item := range tt.args.podListCalls {
 				call := item
@@ -776,7 +776,7 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockClient := mock_client.NewMockClient(ctrl)
-	resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+	resolver := NewEndpointsResolver(mockClient, 1000, logr.New(&log.NullLogSink{}))
 
 	var ingressEndpoints []policyinfo.EndpointInfo
 	var egressEndpoints []policyinfo.EndpointInfo
@@ -972,7 +972,7 @@ func TestEndpointsResolver_ResolveNetworkPeers_NamedIngressPortsIPBlocks(t *test
 	defer ctrl.Finish()
 
 	mockClient := mock_client.NewMockClient(ctrl)
-	resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+	resolver := NewEndpointsResolver(mockClient, 1000, logr.New(&log.NullLogSink{}))
 
 	var ingressEndpoints []policyinfo.EndpointInfo
 	ctx := context.TODO()
