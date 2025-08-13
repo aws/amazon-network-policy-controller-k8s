@@ -2,8 +2,8 @@ package policyendpoints
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
+	"hash/fnv"
 	"strconv"
 
 	"golang.org/x/exp/maps"
@@ -243,7 +243,7 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 }
 
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
-	hasher := sha256.New()
+	hasher := fnv.New64a()
 	hasher.Write([]byte(info.CIDR))
 	for _, except := range info.Except {
 		hasher.Write([]byte(except))

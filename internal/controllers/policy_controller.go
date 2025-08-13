@@ -21,10 +21,12 @@ import (
 	"time"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
+	"golang.org/x/time/rate"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -116,6 +118,10 @@ func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manage
 		WatchesRawSource(source.Channel(policyEventChan, policyEventHandler)).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.maxConcurrentReconciles,
+			RateLimiter: workqueue.NewTypedWithMaxWaitRateLimiter(
+				&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(3), 10)},
+				5*time.Second,
+			),
 		}).Complete(r)
 }
 

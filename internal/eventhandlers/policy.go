@@ -83,10 +83,10 @@ func (h *enqueueRequestForPolicyEvent) Generic(_ context.Context, e event.Generi
 
 func (h *enqueueRequestForPolicyEvent) enqueuePolicy(queue workqueue.TypedRateLimitingInterface[reconcile.Request], policy *networking.NetworkPolicy, addAfter time.Duration) {
 	h.policyTracker.UpdatePolicy(policy)
-	queue.AddAfter(reconcile.Request{
+	queue.AddRateLimited(reconcile.Request{
 		NamespacedName: types.NamespacedName{
 			Namespace: policy.Namespace,
 			Name:      policy.Name,
 		},
-	}, addAfter)
+	})
 }

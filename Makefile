@@ -17,7 +17,7 @@ IMG ?= public.ecr.aws/eks/amazon-network-policy-controller-k8s:v1.0.2
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.26.1
 # ARCHS define the target architectures for the controller image be build
-ARCHS ?= amd64 arm64
+ARCHS ?= amd64
 # IMG_SBOM defines the SBOM media type to use, we set to none since ECR doesn't support it yet
 IMG_SBOM ?= none
 
