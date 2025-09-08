@@ -65,7 +65,8 @@ func (h *enqueueRequestForPodEvent) Update(ctx context.Context, e event.UpdateEv
 	if equality.Semantic.DeepEqual(podOld.Annotations, podNew.Annotations) &&
 		equality.Semantic.DeepEqual(podOld.Labels, podNew.Labels) &&
 		equality.Semantic.DeepEqual(podOld.DeletionTimestamp.IsZero(), podNew.DeletionTimestamp.IsZero()) &&
-		equality.Semantic.DeepEqual(podOld.Status.PodIP, podNew.Status.PodIP) {
+		equality.Semantic.DeepEqual(podOld.Status.PodIP, podNew.Status.PodIP) &&
+		equality.Semantic.DeepEqual(podOld.Status.Phase, podNew.Status.Phase) {
 		return
 	}
 	h.enqueueReferredPolicies(ctx, q, podNew, podOld)

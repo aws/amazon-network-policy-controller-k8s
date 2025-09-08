@@ -185,3 +185,57 @@ func Test_LookupContainerPortAndName(t *testing.T) {
 		})
 	}
 }
+func TestIsPodNetworkReady(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "running pod with IP",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					PodIP: "10.0.0.1",
+					Phase: corev1.PodRunning,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "succeeded pod with IP should be excluded",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					PodIP: "10.0.0.1",
+					Phase: corev1.PodSucceeded,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "failed pod with IP should be excluded",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					PodIP: "10.0.0.1",
+					Phase: corev1.PodFailed,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "running pod without IP",
+			pod: &corev1.Pod{
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsPodNetworkReady(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
