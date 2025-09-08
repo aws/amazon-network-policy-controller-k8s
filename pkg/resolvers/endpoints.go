@@ -116,8 +116,8 @@ func (r *defaultEndpointsResolver) computePodSelectorEndpoints(ctx context.Conte
 		return nil, err
 	}
 	for _, pod := range podList.Items {
-		podIP := k8s.GetPodIP(&pod)
-		if len(podIP) > 0 {
+		if k8s.IsPodNetworkReady(&pod) {
+			podIP := k8s.GetPodIP(&pod)
 			podEndpoints = append(podEndpoints, policyinfo.PodEndpoint{
 				PodIP:     policyinfo.NetworkAddress(podIP),
 				HostIP:    policyinfo.NetworkAddress(pod.Status.HostIP),
@@ -224,6 +224,9 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	r.logger.V(2).Info("list pods for ingress", "podList", *podList, "namespace", policyNamespace, "selector", *policyPodSelector)
 	var portList []policyinfo.Port
 	for _, pod := range podList.Items {
+		if !k8s.IsPodNetworkReady(&pod) {
+			continue
+		}
 		portList = append(portList, r.getPortList(pod, ports)...)
 		r.logger.V(1).Info("Got ingress port from pod", "pod", types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}.String())
 	}
@@ -349,10 +352,10 @@ func (r *defaultEndpointsResolver) getMatchingPodAddresses(ctx context.Context, 
 	r.logger.V(1).Info("Got pods for label selector", "count", len(podList.Items), "selector", ls.String())
 
 	for _, pod := range podList.Items {
-		podIP := k8s.GetPodIP(&pod)
-		if len(podIP) == 0 {
+		if !k8s.IsPodNetworkReady(&pod) {
 			continue
 		}
+		podIP := k8s.GetPodIP(&pod)
 
 		if policyType == networking.PolicyTypeEgress {
 			portList = r.getPortList(pod, rulePorts)

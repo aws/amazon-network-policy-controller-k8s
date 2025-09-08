@@ -20,6 +20,13 @@ func GetPodIP(pod *corev1.Pod) string {
 	}
 }
 
+// IsPodNetworkReady returns true if the pod has at least 1 IP address and is in a running state
+func IsPodNetworkReady(pod *corev1.Pod) bool {
+	return len(GetPodIP(pod)) > 0 &&
+		pod.Status.Phase != corev1.PodSucceeded &&
+		pod.Status.Phase != corev1.PodFailed
+}
+
 // LookupContainerPortAndName returns numerical containerPort and portName for specific port and protocol
 func LookupContainerPortAndName(pod *corev1.Pod, port intstr.IntOrString, protocol corev1.Protocol) (int32, string, error) {
 	for _, podContainer := range pod.Spec.Containers {

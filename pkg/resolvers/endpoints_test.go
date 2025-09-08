@@ -1101,3 +1101,78 @@ func TestEndpointsResolver_ResolveNetworkPeers_NamedIngressPortsIPBlocks(t *test
 		assert.Equal(t, portsMap[policy.Spec.Ingress[0].Ports[1].Port.StrVal], *ingPE.Ports[1].Port)
 	}
 }
+
+func TestEndpointsResolver_ExcludesTerminalPods(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mock_client.NewMockClient(ctrl)
+	resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+
+	// Create pods in different phases
+	runningPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "running-pod",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"app": "test"},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.0.0.1",
+			Phase: corev1.PodRunning,
+		},
+	}
+
+	succeededPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "succeeded-pod",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"app": "test"},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.0.0.2",
+			Phase: corev1.PodSucceeded,
+		},
+	}
+
+	failedPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "failed-pod",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"app": "test"},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.0.0.3",
+			Phase: corev1.PodFailed,
+		},
+	}
+
+	podList := &corev1.PodList{
+		Items: []corev1.Pod{*runningPod, *succeededPod, *failedPod},
+	}
+
+	// Mock the List call for pod selector endpoints
+	mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+			list.(*corev1.PodList).Items = podList.Items
+			return nil
+		})
+
+	policy := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-policy",
+			Namespace: "test-ns",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test"},
+			},
+		},
+	}
+
+	_, _, podEndpoints, err := resolver.Resolve(context.Background(), policy)
+
+	assert.NoError(t, err)
+	assert.Len(t, podEndpoints, 1, "Should only include running pod in PolicyEndpoints")
+	assert.Equal(t, "10.0.0.1", string(podEndpoints[0].PodIP))
+	assert.Equal(t, "running-pod", podEndpoints[0].Name)
+}
