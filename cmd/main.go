@@ -103,6 +103,8 @@ func main() {
 	setupLog.Info("Checking args for PE chunk size", "PEChunkSize", controllerCFG.EndpointChunkSize)
 	setupLog.Info("Checking args for policy batch time", "NPBatchTime", controllerCFG.PodUpdateBatchPeriodDuration)
 	setupLog.Info("Checking args for reconciler count", "ReconcilerCount", controllerCFG.MaxConcurrentReconciles)
+	setupLog.Info("Checking args for qps for controller queue", "QPS", controllerCFG.QPS)
+	setupLog.Info("Checking args for burst for controller queue", "Burst", controllerCFG.Burst)
 
 	var cancelFn context.CancelFunc
 	ctx, cancelFn = context.WithCancel(ctx)

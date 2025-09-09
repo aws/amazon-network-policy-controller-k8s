@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
@@ -60,6 +61,8 @@ func NewPolicyReconciler(k8sClient client.Client, policyEndpointsManager policye
 		finalizerManager:             finalizerManager,
 		maxConcurrentReconciles:      controllerConfig.MaxConcurrentReconciles,
 		logger:                       logger,
+		qps:                          controllerConfig.QPS,
+		burst:                        controllerConfig.Burst,
 	}
 }
 
@@ -75,6 +78,8 @@ type policyReconciler struct {
 
 	maxConcurrentReconciles int
 	logger                  logr.Logger
+	qps                     int
+	burst                   int
 }
 
 //+kubebuilder:rbac:groups=networking.k8s.aws,resources=policyendpoints,verbs=get;list;watch;create;update;patch;delete
@@ -108,7 +113,7 @@ func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manage
 		r.logger.Error(err, "Failed to setup the policy controller healthz check")
 		return err
 	}
-
+	fmt.Println("setting qps", r.qps, "burst", r.burst)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
 		Watches(&networking.NetworkPolicy{}, policyEventHandler).
@@ -119,7 +124,7 @@ func (r *policyReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manage
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.maxConcurrentReconciles,
 			RateLimiter: workqueue.NewTypedWithMaxWaitRateLimiter(
-				&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(3), 10)},
+				&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(r.qps), r.burst)},
 				5*time.Second,
 			),
 		}).Complete(r)

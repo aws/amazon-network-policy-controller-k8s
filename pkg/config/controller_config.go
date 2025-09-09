@@ -12,6 +12,8 @@ const (
 	flagEnableConfigMapCheck         = "enable-configmap-check"
 	flagEndpointChunkSize            = "endpoint-chunk-size"
 	flagEnableGoProfiling            = "enable-goprofiling"
+	flagQPS                          = "qps"
+	flagBurst                        = "burst"
 	defaultLogLevel                  = "info"
 	defaultMaxConcurrentReconciles   = 3
 	defaultEndpointsChunkSize        = 200
@@ -19,6 +21,8 @@ const (
 	flagPodUpdateBatchPeriodDuration = "pod-update-batch-period-duration"
 	defaultBatchPeriodDuration       = 1 * time.Second
 	defaultEnableGoProfiling         = false
+	defaultQueueQPS                  = 10
+	defaultQueueBurst                = 50
 )
 
 // ControllerConfig contains the controller configuration
@@ -37,6 +41,10 @@ type ControllerConfig struct {
 	RuntimeConfig RuntimeConfig
 	// EnableGoProfiling enables the goprofiling for dev purpose
 	EnableGoProfiling bool
+	// QPS for policy controller queue
+	QPS int
+	// Burst for policy controller queue
+	Burst int
 }
 
 func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
@@ -52,5 +60,7 @@ func (cfg *ControllerConfig) BindFlags(fs *pflag.FlagSet) {
 		"Duration between batch updates of pods")
 	fs.BoolVar(&cfg.EnableGoProfiling, flagEnableGoProfiling, defaultEnableGoProfiling,
 		"Enable goprofiling for develop purpose")
+	fs.IntVar(&cfg.QPS, flagQPS, defaultQueueQPS, "QPS for policy controller queue")
+	fs.IntVar(&cfg.Burst, flagBurst, defaultQueueBurst, "Burst for policy controller queue")
 	cfg.RuntimeConfig.BindFlags(fs)
 }
