@@ -144,7 +144,7 @@ MOCKGEN ?= $(LOCALBIN)/mockgen
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.4.3
-CONTROLLER_TOOLS_VERSION ?= v0.16.3
+CONTROLLER_TOOLS_VERSION ?= v0.17.0
 
 KUSTOMIZE_INSTALL_SCRIPT ?= "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
 .PHONY: kustomize
@@ -181,6 +181,7 @@ GO_IMAGE_TAG=$(shell cat .go-version)
 BUILD_IMAGE ?= public.ecr.aws/docker/library/golang:$(GO_IMAGE_TAG)
 BASE_IMAGE ?= public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nonroot:latest.2
 GO_RUNNER_IMAGE ?= public.ecr.aws/eks-distro/kubernetes/go-runner:v0.18.0-eks-1-32-latest
+
 .PHONY: docker-buildx
 docker-buildx: prepare-embed test
 	for platform in $(ARCHS); do \
