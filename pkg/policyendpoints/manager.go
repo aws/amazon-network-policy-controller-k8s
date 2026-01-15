@@ -291,7 +291,17 @@ func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyi
 	for _, iep := range ingressEndpoints {
 		if _, ok := combinedMap[string(iep.CIDR)]; ok {
 			tempIEP := combinedMap[string(iep.CIDR)]
-			tempIEP.Ports = append(combinedMap[string(iep.CIDR)].Ports, iep.Ports...)
+			// Handle port semantics correctly:
+			// - Empty Ports slice means "allow all ports"
+			// - If any rule allows all ports, the combined rule should allow all ports
+			if len(iep.Ports) == 0 {
+				// New rule allows all ports, so combined rule should allow all ports
+				tempIEP.Ports = []policyinfo.Port{}
+			} else if len(tempIEP.Ports) != 0 {
+				// Only append ports if existing rule doesn't already allow all ports
+				tempIEP.Ports = append(combinedMap[string(iep.CIDR)].Ports, iep.Ports...)
+			}
+			// If tempIEP.Ports is already empty (allow all), keep it empty
 			tempIEP.Except = append(combinedMap[string(iep.CIDR)].Except, iep.Except...)
 			combinedMap[string(iep.CIDR)] = tempIEP
 		} else {

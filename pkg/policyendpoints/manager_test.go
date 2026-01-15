@@ -560,6 +560,91 @@ func Test_processPolicyEndpoints(t *testing.T) {
 	assert.Equal(t, 2, len(pes[0].Spec.Egress[0].Ports))
 }
 
+// Test_combineRulesEndpoints_AllowAllPortsSemantics tests that when combining rules for the same CIDR,
+// if any rule allows all ports (empty Ports slice), the combined rule should allow all ports.
+// This addresses GitHub issue #197.
+func Test_combineRulesEndpoints_AllowAllPortsSemantics(t *testing.T) {
+	p53 := int32(53)
+	pTCP := corev1.ProtocolTCP
+	pUDP := corev1.ProtocolUDP
+
+	tests := []struct {
+		name           string
+		inputEndpoints []policyinfo.EndpointInfo
+		wantPortsEmpty bool
+		description    string
+	}{
+		{
+			name: "specific ports then allow all - should allow all",
+			inputEndpoints: []policyinfo.EndpointInfo{
+				{
+					CIDR: "172.16.0.0/12",
+					Ports: []policyinfo.Port{
+						{Port: &p53, Protocol: &pUDP},
+						{Port: &p53, Protocol: &pTCP},
+					},
+				},
+				{
+					CIDR:  "172.16.0.0/12",
+					Ports: []policyinfo.Port{}, // Allow all ports
+				},
+			},
+			wantPortsEmpty: true,
+			description:    "When a rule allows all ports comes after specific ports, combined should allow all",
+		},
+		{
+			name: "allow all then specific ports - should allow all",
+			inputEndpoints: []policyinfo.EndpointInfo{
+				{
+					CIDR:  "172.16.0.0/12",
+					Ports: []policyinfo.Port{}, // Allow all ports
+				},
+				{
+					CIDR: "172.16.0.0/12",
+					Ports: []policyinfo.Port{
+						{Port: &p53, Protocol: &pUDP},
+						{Port: &p53, Protocol: &pTCP},
+					},
+				},
+			},
+			wantPortsEmpty: true,
+			description:    "When a rule allows all ports comes before specific ports, combined should allow all",
+		},
+		{
+			name: "only specific ports - should keep specific ports",
+			inputEndpoints: []policyinfo.EndpointInfo{
+				{
+					CIDR: "172.16.0.0/12",
+					Ports: []policyinfo.Port{
+						{Port: &p53, Protocol: &pUDP},
+					},
+				},
+				{
+					CIDR: "172.16.0.0/12",
+					Ports: []policyinfo.Port{
+						{Port: &p53, Protocol: &pTCP},
+					},
+				},
+			},
+			wantPortsEmpty: false,
+			description:    "When all rules have specific ports, combined should have all those ports",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := combineRulesEndpoints(tt.inputEndpoints)
+			assert.Equal(t, 1, len(result), "Should combine to single CIDR entry")
+
+			if tt.wantPortsEmpty {
+				assert.Empty(t, result[0].Ports, tt.description)
+			} else {
+				assert.NotEmpty(t, result[0].Ports, tt.description)
+			}
+		})
+	}
+}
+
 func Test_policyEndpointsManager_computeApplicationNetworkPolicyEndpoints(t *testing.T) {
 	type args struct {
 		anp                  *policyinfo.ApplicationNetworkPolicy
