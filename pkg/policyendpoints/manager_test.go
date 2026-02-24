@@ -560,6 +560,100 @@ func Test_processPolicyEndpoints(t *testing.T) {
 	assert.Equal(t, 2, len(pes[0].Spec.Egress[0].Ports))
 }
 
+func Test_combineRulesEndpoints(t *testing.T) {
+	p53 := int32(53)
+	pTCP := corev1.ProtocolTCP
+	pUDP := corev1.ProtocolUDP
+
+	tests := []struct {
+		name      string
+		endpoints []policyinfo.EndpointInfo
+		wantCount int
+		// wantPorts maps CIDR string → expected port count; -1 means expect nil/empty (allow all)
+		wantPorts map[string]int
+	}{
+		{
+			name: "same CIDR different exception lists are not merged",
+			endpoints: []policyinfo.EndpointInfo{
+				// DNS rule: allow port 53 to anywhere (no exceptions)
+				{
+					CIDR:  "0.0.0.0/0",
+					Ports: []policyinfo.Port{{Protocol: &pTCP, Port: &p53}, {Protocol: &pUDP, Port: &p53}},
+				},
+				// Broad allow: all ports to 0.0.0.0/0 except private ranges
+				{
+					CIDR:   "0.0.0.0/0",
+					Except: []policyinfo.NetworkAddress{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
+				},
+			},
+			wantCount: 2,
+		},
+		{
+			name: "allow-all ports semantics preserved when merging with specific-port rule",
+			endpoints: []policyinfo.EndpointInfo{
+				// Rule with specific ports
+				{
+					CIDR:  "172.16.0.0/12",
+					Ports: []policyinfo.Port{{Protocol: &pTCP, Port: &p53}, {Protocol: &pUDP, Port: &p53}},
+				},
+				// Rule with no port restriction (allow all) for same CIDR
+				{
+					CIDR: "172.16.0.0/12",
+				},
+			},
+			wantCount: 1,
+			wantPorts: map[string]int{"172.16.0.0/12": -1}, // -1 = expect nil ports (allow all)
+		},
+		{
+			name: "same CIDR same exceptions different ports are merged",
+			endpoints: []policyinfo.EndpointInfo{
+				{CIDR: "1.2.3.4", Ports: []policyinfo.Port{{Protocol: &pTCP, Port: &p53}}},
+				{CIDR: "1.2.3.4", Ports: []policyinfo.Port{{Protocol: &pUDP, Port: &p53}}},
+			},
+			wantCount: 1,
+			wantPorts: map[string]int{"1.2.3.4": 2},
+		},
+		{
+			name: "exception list order does not affect key stability",
+			endpoints: []policyinfo.EndpointInfo{
+				{
+					CIDR:   "0.0.0.0/0",
+					Except: []policyinfo.NetworkAddress{"10.0.0.0/8", "172.16.0.0/12"},
+					Ports:  []policyinfo.Port{{Protocol: &pTCP, Port: &p53}},
+				},
+				{
+					// Same CIDR and same excepts but in reverse order — should still merge
+					CIDR:   "0.0.0.0/0",
+					Except: []policyinfo.NetworkAddress{"172.16.0.0/12", "10.0.0.0/8"},
+					Ports:  []policyinfo.Port{{Protocol: &pUDP, Port: &p53}},
+				},
+			},
+			wantCount: 1,
+			wantPorts: map[string]int{"0.0.0.0/0": 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := combineRulesEndpoints(tt.endpoints)
+			assert.Equal(t, tt.wantCount, len(result))
+			if tt.wantPorts != nil {
+				for _, ep := range result {
+					expected, ok := tt.wantPorts[string(ep.CIDR)]
+					if !ok {
+						continue
+					}
+					if expected == -1 {
+						assert.Empty(t, ep.Ports, "expected allow-all (nil/empty) ports for CIDR %s", ep.CIDR)
+					} else {
+						assert.Equal(t, expected, len(ep.Ports), "unexpected port count for CIDR %s", ep.CIDR)
+					}
+				}
+			}
+		})
+	}
+}
+
 func Test_policyEndpointsManager_computeApplicationNetworkPolicyEndpoints(t *testing.T) {
 	type args struct {
 		anp                  *policyinfo.ApplicationNetworkPolicy

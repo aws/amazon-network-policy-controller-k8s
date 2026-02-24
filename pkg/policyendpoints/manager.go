@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"golang.org/x/exp/maps"
@@ -284,18 +285,37 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 	return newPEs
 }
 
-// TODO: Unify combineRulesEndpoints and combineANPRulesEndpoints - both can use getEndpointInfoKey() for consistent hashing
-// the controller should consolidate the ingress and egress endpoints and put entries to one CIDR if they belong to a same CIDR
-func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
+// endpointCombineKey returns a stable hash key based on CIDR and the sorted exception list.
+// It intentionally excludes Ports so that multiple rules for the same CIDR+Except can be merged.
+func endpointCombineKey(ep policyinfo.EndpointInfo) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(ep.CIDR))
+	excepts := make([]string, len(ep.Except))
+	for i, e := range ep.Except {
+		excepts[i] = string(e)
+	}
+	sort.Strings(excepts)
+	for _, e := range excepts {
+		hasher.Write([]byte(e))
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func combineRulesEndpoints(endpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
 	combinedMap := make(map[string]policyinfo.EndpointInfo)
-	for _, iep := range ingressEndpoints {
-		if _, ok := combinedMap[string(iep.CIDR)]; ok {
-			tempIEP := combinedMap[string(iep.CIDR)]
-			tempIEP.Ports = append(combinedMap[string(iep.CIDR)].Ports, iep.Ports...)
-			tempIEP.Except = append(combinedMap[string(iep.CIDR)].Except, iep.Except...)
-			combinedMap[string(iep.CIDR)] = tempIEP
+	for _, ep := range endpoints {
+		key := endpointCombineKey(ep)
+		if existing, ok := combinedMap[key]; ok {
+			// Both entries share the same CIDR and Except list.
+			// If either has nil/empty Ports (meaning "allow all ports"), preserve that semantics.
+			if len(existing.Ports) == 0 || len(ep.Ports) == 0 {
+				existing.Ports = nil
+			} else {
+				existing.Ports = append(existing.Ports, ep.Ports...)
+			}
+			combinedMap[key] = existing
 		} else {
-			combinedMap[string(iep.CIDR)] = iep
+			combinedMap[key] = ep
 		}
 	}
 	if len(combinedMap) > 0 {
