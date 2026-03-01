@@ -17,6 +17,10 @@ The controller does not require any IAM policies. It does not make AWS API calls
 - Kubernetes Version - 1.25+
 - Amazon VPC CNI version - 1.14.0+
 
+## Limitations
+
+When using Services as peers in egress rules, the controller is limited to tracking services where `service.spec.Selector` matches the pod selector in the egress rules. This limitation exists because the network agent attaches eBPF probes to the TC hook of the pod veth interface, which prevents it from seeing the pod IP after DNAT happens for cluster IPs.
+
 ## Deploy Controller on Dataplane for Development Testing
 
 To deploy the network policy controller on dataplane nodes for development and testing:
