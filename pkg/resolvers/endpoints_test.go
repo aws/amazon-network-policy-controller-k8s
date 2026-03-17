@@ -1649,8 +1649,8 @@ func TestGetMatchingServiceClusterIPs_NamedPortBypass(t *testing.T) {
 			name:          "safe: mixed numeric+named NP ports — named port keeps ClusterIP even though numeric is skipped",
 			npPodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"shared-backend": "true"}},
 			npPorts: []networking.NetworkPolicyPort{
-				{Protocol: &protocolTCP, Port: &intOrStrPort80},   // numeric: bypass detected, skipped
-				{Protocol: &protocolTCP, Port: &namedPortHTTP},    // named: bypass check not applicable, included
+				{Protocol: &protocolTCP, Port: &intOrStrPort80}, // numeric: bypass detected, skipped
+				{Protocol: &protocolTCP, Port: &namedPortHTTP},  // named: bypass check not applicable, included
 			},
 			services: []corev1.Service{
 				{
