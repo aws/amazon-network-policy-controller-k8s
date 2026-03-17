@@ -481,7 +481,7 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 				// on some backing pods, bypassing the policy's port restriction via DNAT.
 				if npPort.Port.Type == intstr.Int {
 					if r.hasTargetPortBypass(svc, portVal, npProto, npPorts, getAllPods) {
-						r.logger.Info("Skipping service port due to named targetPort bypass",
+						r.logger.Info("Skipping service ClusterIP port (named targetPort may bypass policy port restriction)",
 							"serviceName", svc.Name, "serviceNamespace", svc.Namespace,
 							"servicePort", portVal)
 						continue
