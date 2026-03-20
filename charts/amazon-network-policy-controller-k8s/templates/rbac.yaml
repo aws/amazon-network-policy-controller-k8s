@@ -65,15 +65,6 @@ rules:
   - list
   - watch
 - apiGroups:
-  - apiextensions.k8s.io
-  resources:
-  - customresourcedefinitions
-  verbs:
-  - create
-  - get
-  - list
-  - watch
-- apiGroups:
   - ""
   resources:
   - pods
@@ -92,7 +83,19 @@ rules:
 - apiGroups:
   - networking.k8s.aws
   resources:
+  - applicationnetworkpolicies
+  - clusternetworkpolicies
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.aws
+  resources:
   - policyendpoints
+  - clusterpolicyendpoints
   verbs:
   - create
   - delete
@@ -105,11 +108,17 @@ rules:
   - networking.k8s.aws
   resources:
   - policyendpoints/finalizers
+  - applicationnetworkpolicies/finalizers
+  - clusternetworkpolicies/finalizers
+  - clusterpolicyendpoints/finalizers
   verbs:
   - update
 - apiGroups:
   - networking.k8s.aws
   resources:
+  - applicationnetworkpolicies/status
+  - clusternetworkpolicies/status
+  - clusterpolicyendpoints/status
   - policyendpoints/status
   verbs:
   - get
@@ -124,6 +133,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - get
+  - list
   - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
