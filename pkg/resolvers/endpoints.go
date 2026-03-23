@@ -550,26 +550,20 @@ func (r *defaultEndpointsResolver) hasTargetPortBypass(svc *corev1.Service, matc
 		if !svcSelector.Matches(labels.Set(pod.Labels)) {
 			continue
 		}
-		for j := range pod.Spec.Containers {
-			container := &pod.Spec.Containers[j]
-			for k := range container.Ports {
-				cp := container.Ports[k]
-				if cp.Name == targetPortName {
-					cpProto := cp.Protocol
-					if cpProto == "" {
-						cpProto = corev1.ProtocolTCP
-					}
-					if !isNumericPortAllowed(cp.ContainerPort, cpProto, policyPorts) {
-						r.logger.Info("Named port resolves to disallowed container port",
-							"service", k8s.NamespacedName(svc),
-							"pod", k8s.NamespacedName(pod),
-							"container", container.Name,
-							"portName", cp.Name,
-							"containerPort", cp.ContainerPort, "protocol", cpProto)
-						return true
-					}
-				}
-			}
+		// Resolve the named port using the first matching container port, matching
+		// Kubernetes EndpointSlice controller behavior for svc resolution.
+		cp, containerName, found := firstNamedPort(pod, targetPortName, protocol)
+		if !found {
+			continue
+		}
+		if !isNumericPortAllowed(cp.ContainerPort, protocol, policyPorts) {
+			r.logger.Info("Named port resolves to disallowed container port",
+				"service", k8s.NamespacedName(svc),
+				"pod", k8s.NamespacedName(pod),
+				"container", containerName,
+				"portName", cp.Name,
+				"containerPort", cp.ContainerPort, "protocol", protocol)
+			return true
 		}
 	}
 	return false
@@ -607,6 +601,25 @@ func isNumericPortAllowed(port int32, protocol corev1.Protocol, policyPorts []ne
 		}
 	}
 	return false
+}
+
+// firstNamedPort returns the first container port matching the given name and protocol in a pod.
+// This mirrors how Kubernetes EndpointSlice controller resolves named targetPorts — it picks the
+// first matching container port across all containers in declaration order.
+func firstNamedPort(pod *corev1.Pod, portName string, protocol corev1.Protocol) (corev1.ContainerPort, string, bool) {
+	for i := range pod.Spec.Containers {
+		for j := range pod.Spec.Containers[i].Ports {
+			cp := pod.Spec.Containers[i].Ports[j]
+			cpProto := cp.Protocol
+			if cpProto == "" {
+				cpProto = corev1.ProtocolTCP
+			}
+			if cp.Name == portName && cpProto == protocol {
+				return cp, pod.Spec.Containers[i].Name, true
+			}
+		}
+	}
+	return corev1.ContainerPort{}, "", false
 }
 
 // getMatchingServicePort finds the service listen port that matches the given port specification.

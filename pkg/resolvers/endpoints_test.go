@@ -2135,6 +2135,39 @@ func TestEndpointsResolver_hasTargetPortBypass(t *testing.T) {
 			},
 			expected: true, // 8080 is outside range 80-100
 		},
+		{
+			name: "safe: multi-container pod — only first matching container port is checked",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 80, TargetPort: intstr.FromString("http"), Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 80,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP, Port: &intOrStrPort80},
+				{Protocol: &protocolTCP, Port: &intOrStrPort8080},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							// First container: http=8080 (this is what the Service resolves to)
+							{Name: "app", Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}},
+							// Second container: http=8090 (ignored by Service endpoint resolution)
+							{Name: "sidecar", Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8090, Protocol: corev1.ProtocolTCP}}},
+						},
+					},
+				},
+			},
+			expected: false, // first container resolves http→8080 which is allowed; sidecar's 8090 is irrelevant
+		},
 	}
 
 	for _, tt := range tests {
