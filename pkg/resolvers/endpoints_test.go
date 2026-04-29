@@ -2,6 +2,7 @@ package resolvers
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"testing"
 
@@ -779,26 +780,54 @@ func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
 		},
 	}
 
-	// Resolve runs ingress, egress, and podSelector in parallel,
-	// so dispatch by list type and namespace instead of ordering.
+	// Resolve runs ingress, egress, and podSelector in parallel, so dispatch by
+	// list type + namespace + selector instead of by call order. Unknown
+	// combinations fail the test to catch regressions where the resolver queries
+	// an unexpected namespace or selector.
 	mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 			listOpts := &client.ListOptions{}
 			for _, opt := range opts {
 				opt.ApplyToList(listOpts)
 			}
+			sel := ""
+			if listOpts.LabelSelector != nil {
+				sel = listOpts.LabelSelector.String()
+			}
 			switch typedList := list.(type) {
 			case *corev1.NamespaceList:
+				// Ingress and egress peers both select namespace "src" by name label.
+				if sel != "kubernetes.io/metadata.name=src" {
+					t.Errorf("unexpected namespace list selector: %q", sel)
+					return fmt.Errorf("unexpected namespace list selector: %q", sel)
+				}
 				typedList.Items = []corev1.Namespace{srcNS}
 			case *corev1.ServiceList:
-				// empty — no services
+				// Egress service ClusterIP lookup in the resolved peer namespace ("src").
+				if listOpts.Namespace != "src" {
+					t.Errorf("unexpected service list namespace: %q", listOpts.Namespace)
+					return fmt.Errorf("unexpected service list namespace: %q", listOpts.Namespace)
+				}
 			case *corev1.PodList:
+				// Policy has empty podSelector on both sides, so all pod lists use the empty selector.
+				if sel != "" {
+					t.Errorf("unexpected pod list selector: %q", sel)
+					return fmt.Errorf("unexpected pod list selector: %q", sel)
+				}
 				switch listOpts.Namespace {
 				case "dst":
+					// Ingress named-port resolution + podSelector endpoints (policy namespace).
 					typedList.Items = []corev1.Pod{dstPodOne, dstPodTwo}
 				case "src":
+					// Ingress peer pods + egress peer pods.
 					typedList.Items = []corev1.Pod{srcPod}
+				default:
+					t.Errorf("unexpected pod list namespace: %q", listOpts.Namespace)
+					return fmt.Errorf("unexpected pod list namespace: %q", listOpts.Namespace)
 				}
+			default:
+				t.Errorf("unexpected list type: %T", list)
+				return fmt.Errorf("unexpected list type: %T", list)
 			}
 			return nil
 		})
@@ -1289,6 +1318,7 @@ func TestEndpointsResolver_IncludesHostNetworkPodsInIngressEgressRules(t *testin
 
 	// Mock List calls - with parallel Resolve, call order is non-deterministic,
 	// so dispatch by list type and label selector instead of using gomock.InOrder.
+	// Unknown selectors fail the test to catch regressions.
 	mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 			listOpts := &client.ListOptions{}
@@ -1303,15 +1333,21 @@ func TestEndpointsResolver_IncludesHostNetworkPodsInIngressEgressRules(t *testin
 				if listOpts.LabelSelector != nil {
 					sel = listOpts.LabelSelector.String()
 				}
-				switch {
-				case sel == "role=monitoring":
+				switch sel {
+				case "role=monitoring":
 					typedList.Items = []corev1.Pod{hostNetworkMonitoringPod, regularMonitoringPod}
-				case sel == "role=database":
+				case "role=database":
 					typedList.Items = []corev1.Pod{hostNetworkDatabasePod, regularDatabasePod}
-				default:
-					// role=backend (both getIngressRulesPorts and computePodSelectorEndpoints)
+				case "role=backend":
+					// Used by both getIngressRulesPorts and computePodSelectorEndpoints.
 					typedList.Items = []corev1.Pod{targetPod}
+				default:
+					t.Errorf("unexpected pod list selector: %q", sel)
+					return fmt.Errorf("unexpected pod list selector: %q", sel)
 				}
+			default:
+				t.Errorf("unexpected list type: %T", list)
+				return fmt.Errorf("unexpected list type: %T", list)
 			}
 			return nil
 		})
