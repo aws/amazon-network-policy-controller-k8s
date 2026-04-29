@@ -1327,8 +1327,16 @@ func TestEndpointsResolver_IncludesHostNetworkPodsInIngressEgressRules(t *testin
 			}
 			switch typedList := list.(type) {
 			case *corev1.ServiceList:
+				if listOpts.Namespace != "test-ns" {
+					t.Errorf("unexpected service list namespace: %q", listOpts.Namespace)
+					return fmt.Errorf("unexpected service list namespace: %q", listOpts.Namespace)
+				}
 				return nil
 			case *corev1.PodList:
+				if listOpts.Namespace != "test-ns" {
+					t.Errorf("unexpected pod list namespace: %q", listOpts.Namespace)
+					return fmt.Errorf("unexpected pod list namespace: %q", listOpts.Namespace)
+				}
 				sel := ""
 				if listOpts.LabelSelector != nil {
 					sel = listOpts.LabelSelector.String()
