@@ -1047,6 +1047,81 @@ func TestEndpointsResolver_ResolveNetworkPeers_NamedIngressPortsIPBlocks(t *test
 			assert.Equal(t, wantPorts, gotPorts)
 		}
 	})
+
+	t.Run("mixed numeric and named ports", func(t *testing.T) {
+		port443 := int32(443)
+		policy := &networking.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "netpol-mixed",
+				Namespace: "dst",
+			},
+			Spec: networking.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{},
+				PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+				Ingress: []networking.NetworkPolicyIngressRule{
+					{
+						From: []networking.NetworkPolicyPeer{
+							{
+								IPBlock: &networking.IPBlock{
+									CIDR: "10.0.0.0/8",
+								},
+							},
+						},
+						Ports: []networking.NetworkPolicyPort{
+							{
+								Protocol: &protocolTCP,
+								Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: port443},
+							},
+							{
+								Protocol: &protocolTCP,
+								Port:     &intstr.IntOrString{Type: intstr.String, StrVal: "src-port"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mock_client.NewMockClient(ctrl)
+		resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+
+		// Named port present triggers getIngressRulesPorts which lists destination pods
+		// in the policy namespace with the policy's podSelector
+		mockClient.EXPECT().List(gomock.Any(), gomock.AssignableToTypeOf(&corev1.PodList{}), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+				listOpts := &client.ListOptions{}
+				for _, opt := range opts {
+					opt.ApplyToList(listOpts)
+				}
+				if listOpts.Namespace != "dst" {
+					t.Fatalf("unexpected pod list namespace: %q, expected \"dst\"", listOpts.Namespace)
+				}
+				sel := ""
+				if listOpts.LabelSelector != nil {
+					sel = listOpts.LabelSelector.String()
+				}
+				if sel != "" {
+					t.Fatalf("unexpected pod list selector: %q, expected empty selector", sel)
+				}
+				list.(*corev1.PodList).Items = []corev1.Pod{dstPod}
+				return nil
+			})
+
+		ingressEndpoints, err := resolver.computeIngressEndpoints(context.TODO(), policy)
+		assert.NoError(t, err)
+
+		// Should resolve both: numeric 443 directly + named "src-port" -> 8080 from dstPod
+		require.Len(t, ingressEndpoints, 1)
+		ingPE := ingressEndpoints[0]
+		assert.Equal(t, "10.0.0.0/8", string(ingPE.CIDR))
+		assert.Len(t, ingPE.Ports, 2)
+		gotPorts := []int32{*ingPE.Ports[0].Port, *ingPE.Ports[1].Port}
+		sort.Slice(gotPorts, func(i, j int) bool { return gotPorts[i] < gotPorts[j] })
+		assert.Equal(t, []int32{port443, port8080}, gotPorts)
+	})
 }
 
 func TestEndpointsResolver_ExcludesTerminalPods(t *testing.T) {

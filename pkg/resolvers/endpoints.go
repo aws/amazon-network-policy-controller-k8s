@@ -106,7 +106,7 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 
 		for _, peer := range rule.From {
 			if peer.IPBlock != nil {
-				ingressEndpoints = append(ingressEndpoints, r.buildIPBlockEndpoint(peer.IPBlock, resolvedPorts)...)
+				ingressEndpoints = append(ingressEndpoints, r.buildIPBlockEndpoint(peer.IPBlock, resolvedPorts))
 				continue
 			}
 
@@ -178,17 +178,15 @@ func (r *defaultEndpointsResolver) buildAllowAllIngress(ports []policyinfo.Port)
 }
 
 // buildIPBlockEndpoint converts an IPBlock peer into an EndpointInfo entry with the given ports.
-func (r *defaultEndpointsResolver) buildIPBlockEndpoint(ipBlock *networking.IPBlock, ports []policyinfo.Port) []policyinfo.EndpointInfo {
+func (r *defaultEndpointsResolver) buildIPBlockEndpoint(ipBlock *networking.IPBlock, ports []policyinfo.Port) policyinfo.EndpointInfo {
 	var except []policyinfo.NetworkAddress
 	for _, ea := range ipBlock.Except {
 		except = append(except, policyinfo.NetworkAddress(ea))
 	}
-	return []policyinfo.EndpointInfo{
-		{
-			CIDR:   policyinfo.NetworkAddress(ipBlock.CIDR),
-			Except: except,
-			Ports:  ports,
-		},
+	return policyinfo.EndpointInfo{
+		CIDR:   policyinfo.NetworkAddress(ipBlock.CIDR),
+		Except: except,
+		Ports:  ports,
 	}
 }
 
@@ -208,28 +206,22 @@ func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, p
 			continue
 		}
 
+		// Pre-compute CIDR-compatible ports once per rule (named ports excluded
+		// since there's no specific destination to resolve them against).
+		var cidrPorts []policyinfo.Port
+		for _, port := range rule.Ports {
+			if portInfo := r.convertToPolicyInfoPortForCIDRs(port); portInfo != nil {
+				cidrPorts = append(cidrPorts, *portInfo)
+			}
+		}
+
 		for _, peer := range rule.To {
 			if peer.IPBlock != nil {
-				// Named ports can't be resolved for CIDRs — only numeric/nil ports are included
-				var portList []policyinfo.Port
-				for _, port := range rule.Ports {
-					if portInfo := r.convertToPolicyInfoPortForCIDRs(port); portInfo != nil {
-						portList = append(portList, *portInfo)
-					}
-				}
-				if len(rule.Ports) != 0 && len(portList) == 0 {
+				if len(rule.Ports) != 0 && len(cidrPorts) == 0 {
 					r.logger.Info("Couldn't resolve ports from given CIDR list, skipping peer", "peer", peer)
 					continue
 				}
-				var except []policyinfo.NetworkAddress
-				for _, ea := range peer.IPBlock.Except {
-					except = append(except, policyinfo.NetworkAddress(ea))
-				}
-				egressEndpoints = append(egressEndpoints, policyinfo.EndpointInfo{
-					CIDR:   policyinfo.NetworkAddress(peer.IPBlock.CIDR),
-					Except: except,
-					Ports:  portList,
-				})
+				egressEndpoints = append(egressEndpoints, r.buildIPBlockEndpoint(peer.IPBlock, cidrPorts))
 				continue
 			}
 
