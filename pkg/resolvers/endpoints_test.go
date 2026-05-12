@@ -223,6 +223,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 		},
 		Spec: networking.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
 			Ingress: []networking.NetworkPolicyIngressRule{
 				{
 					From: []networking.NetworkPolicyPeer{
@@ -241,6 +242,7 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 		},
 		Spec: networking.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeEgress},
 			Egress: []networking.NetworkPolicyEgressRule{
 				{
 					To: []networking.NetworkPolicyPeer{
@@ -638,6 +640,124 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEndpointsResolver_Resolve_RespectsPolicyTypes asserts that Resolve honors
+// spec.policyTypes per the Kubernetes NetworkPolicy spec: when policyTypes does
+// not include "Egress", a populated spec.egress block must not produce egress
+// endpoints (and likewise for Ingress). The spec is explicit that policyTypes
+// gates which directions are enforced, regardless of whether the corresponding
+// rule block is non-empty.
+func TestEndpointsResolver_Resolve_RespectsPolicyTypes(t *testing.T) {
+	ingressOnlyWithEgressBlock := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ingress-only-with-egress-block",
+			Namespace: "ns",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+			Ingress: []networking.NetworkPolicyIngressRule{
+				{
+					From: []networking.NetworkPolicyPeer{
+						{IPBlock: &networking.IPBlock{CIDR: "10.0.0.0/24"}},
+					},
+				},
+			},
+			Egress: []networking.NetworkPolicyEgressRule{
+				{
+					To: []networking.NetworkPolicyPeer{
+						{IPBlock: &networking.IPBlock{CIDR: "192.168.1.0/24"}},
+					},
+				},
+			},
+		},
+	}
+
+	egressOnlyWithIngressBlock := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "egress-only-with-ingress-block",
+			Namespace: "ns",
+		},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeEgress},
+			Ingress: []networking.NetworkPolicyIngressRule{
+				{
+					From: []networking.NetworkPolicyPeer{
+						{IPBlock: &networking.IPBlock{CIDR: "10.0.0.0/24"}},
+					},
+				},
+			},
+			Egress: []networking.NetworkPolicyEgressRule{
+				{
+					To: []networking.NetworkPolicyPeer{
+						{IPBlock: &networking.IPBlock{CIDR: "192.168.1.0/24"}},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		policy           *networking.NetworkPolicy
+		wantIngressCIDRs []string
+		wantEgressCIDRs  []string
+	}{
+		{
+			name:             "policyTypes=[Ingress] with populated spec.egress: egress block must be ignored",
+			policy:           ingressOnlyWithEgressBlock,
+			wantIngressCIDRs: []string{"10.0.0.0/24"},
+			wantEgressCIDRs:  nil,
+		},
+		{
+			name:             "policyTypes=[Egress] with populated spec.ingress: ingress block must be ignored",
+			policy:           egressOnlyWithIngressBlock,
+			wantIngressCIDRs: nil,
+			wantEgressCIDRs:  []string{"192.168.1.0/24"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockClient := mock_client.NewMockClient(ctrl)
+			// computePodSelectorEndpoints unconditionally lists pods; return empty.
+			mockClient.EXPECT().List(gomock.Any(), gomock.AssignableToTypeOf(&corev1.PodList{}), gomock.Any()).
+				Return(nil).AnyTimes()
+
+			resolver := NewEndpointsResolver(mockClient, logr.New(&log.NullLogSink{}))
+
+			ingressEndpoints, egressEndpoints, _, err := resolver.Resolve(context.Background(), tt.policy)
+			require.NoError(t, err)
+
+			gotIngress := make([]string, 0, len(ingressEndpoints))
+			for _, ep := range ingressEndpoints {
+				gotIngress = append(gotIngress, string(ep.CIDR))
+			}
+			gotEgress := make([]string, 0, len(egressEndpoints))
+			for _, ep := range egressEndpoints {
+				gotEgress = append(gotEgress, string(ep.CIDR))
+			}
+			sort.Strings(gotIngress)
+			sort.Strings(gotEgress)
+
+			assert.Equal(t, tt.wantIngressCIDRs, nilIfEmpty(gotIngress),
+				"ingress endpoints must be empty when policyTypes does not include Ingress")
+			assert.Equal(t, tt.wantEgressCIDRs, nilIfEmpty(gotEgress),
+				"egress endpoints must be empty when policyTypes does not include Egress")
+		})
+	}
+}
+
+func nilIfEmpty(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
 }
 
 func TestEndpointsResolver_ResolveNetworkPeers(t *testing.T) {
