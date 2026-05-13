@@ -385,14 +385,18 @@ func (m *policyEndpointsManager) processANPPolicyEndpoints(pes []policyinfo.Poli
 	return newPEs
 }
 
-// combineANPRulesEndpoints handles both CIDR and FQDN endpoints
+// combineANPRulesEndpoints handles both CIDR and FQDN endpoints.
+// It combines entries with the same CIDR/DomainName+exceptions, merging their ports.
 func (m *policyEndpointsManager) combineANPRulesEndpoints(endpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
 	combinedMap := make(map[string]policyinfo.EndpointInfo)
 	for _, ep := range endpoints {
-		key := m.getEndpointInfoKey(ep) // Uses hash that handles both CIDR and FQDN
+		key := getANPCombineKey(ep)
 		if existing, ok := combinedMap[key]; ok {
-			existing.Ports = append(existing.Ports, ep.Ports...)
-			existing.Except = append(existing.Except, ep.Except...)
+			if len(ep.Ports) == 0 || len(existing.Ports) == 0 {
+				existing.Ports = []policyinfo.Port{}
+			} else {
+				existing.Ports = deduplicatePorts(append(existing.Ports, ep.Ports...))
+			}
 			combinedMap[key] = existing
 		} else {
 			combinedMap[key] = ep
@@ -402,6 +406,28 @@ func (m *policyEndpointsManager) combineANPRulesEndpoints(endpoints []policyinfo
 		return maps.Values(combinedMap)
 	}
 	return nil
+}
+
+// getANPCombineKey creates a combining key from CIDR or DomainName and sorted exceptions,
+// excluding ports so that entries with the same network identity get merged.
+func getANPCombineKey(ep policyinfo.EndpointInfo) string {
+	var key string
+	if ep.DomainName != "" {
+		key = "fqdn|" + string(ep.DomainName) + "|"
+	} else {
+		key = "cidr|" + string(ep.CIDR) + "|"
+	}
+
+	sortedExcepts := make([]policyinfo.NetworkAddress, len(ep.Except))
+	copy(sortedExcepts, ep.Except)
+	sort.Slice(sortedExcepts, func(i, j int) bool {
+		return string(sortedExcepts[i]) < string(sortedExcepts[j])
+	})
+	for _, except := range sortedExcepts {
+		key += string(except) + "|"
+	}
+
+	return key
 }
 
 func (m *policyEndpointsManager) newPolicyEndpoint(metadata PolicyMetadata,
