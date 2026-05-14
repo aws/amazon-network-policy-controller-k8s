@@ -351,7 +351,8 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPIngressRuleToNP(
 			Namespace: namespace,
 		},
 		Spec: networking.NetworkPolicySpec{
-			Ingress: []networking.NetworkPolicyIngressRule{ingressRule},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+			Ingress:     []networking.NetworkPolicyIngressRule{ingressRule},
 		},
 	}
 }
@@ -397,7 +398,8 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPEgressRuleToNP(c
 			Namespace: namespace,
 		},
 		Spec: networking.NetworkPolicySpec{
-			Egress: []networking.NetworkPolicyEgressRule{egressRule},
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeEgress},
+			Egress:      []networking.NetworkPolicyEgressRule{egressRule},
 		},
 	}
 }
