@@ -162,17 +162,6 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolvePodEndpointsFromSubject(c
 	return []policyinfo.PodEndpoint{}, nil
 }
 
-func (r *clusterNetworkPolicyEndpointsResolver) resolveTargetNamespaces(ctx context.Context, nsSelector *metav1.LabelSelector, podNSSelector *metav1.LabelSelector) ([]string, error) {
-	if nsSelector != nil {
-		// Handle namespace selector
-		return r.resolveNamespacesBySelector(ctx, *nsSelector)
-	} else if podNSSelector != nil {
-		// Handle pods selector - get namespaces from NamespaceSelector
-		return r.resolveNamespacesBySelector(ctx, *podNSSelector)
-	}
-	return nil, nil
-}
-
 func (r *clusterNetworkPolicyEndpointsResolver) resolveNamespacesBySelector(ctx context.Context, nsSelector metav1.LabelSelector) ([]string, error) {
 	// Empty selector {} means all namespaces
 	if len(nsSelector.MatchLabels) == 0 && len(nsSelector.MatchExpressions) == 0 {
@@ -256,15 +245,33 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertCNPPortsToEndpointPorts(c
 	return ports
 }
 
+func hasNamedCNPPorts(cnpPorts *[]policyinfo.ClusterNetworkPolicyPort) bool {
+	if cnpPorts == nil {
+		return false
+	}
+
+	for _, cnpPort := range *cnpPorts {
+		if cnpPort.NamedPort != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPEgressRules(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) ([]policyinfo.ClusterEndpointInfo, error) {
 	var endpointInfos []policyinfo.ClusterEndpointInfo
+
+	subjectNamespace, err := r.getSubjectNamespace(ctx, cnp)
+	if err != nil {
+		return nil, fmt.Errorf("err in resolving CNP egress rules %w", err)
+	}
 
 	for _, rule := range cnp.Spec.Egress {
 		for _, peer := range rule.To {
 			// Handle each peer type exclusively
 			if len(peer.Networks) > 0 {
-				// CIDR peer - convert to NP and resolve (namespace doesn't affect CIDR resolution)
-				tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, "default")
+				// CIDR peer - namespace is irrelevant for CIDR resolution
+				tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, subjectNamespace)
 				_, cidrEgressEndpoints, _, err := r.baseResolver.Resolve(ctx, tempNP)
 				if err != nil {
 					return nil, err
@@ -278,30 +285,18 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPEgressRules(ctx contex
 					})
 				}
 			} else if peer.Namespaces != nil || peer.Pods != nil {
-				// Namespace or Pod peer - resolve target namespaces
-				var podNSSelector *metav1.LabelSelector
-				if peer.Pods != nil {
-					podNSSelector = &peer.Pods.NamespaceSelector
-				}
-				targetNamespaces, err := r.resolveTargetNamespaces(ctx, peer.Namespaces, podNSSelector)
+				tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, subjectNamespace)
+				_, egressEndpoints, _, err := r.baseResolver.Resolve(ctx, tempNP)
 				if err != nil {
 					return nil, err
 				}
 
-				for _, ns := range targetNamespaces {
-					tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, ns)
-					_, cidrEgressEndpoints, _, err := r.baseResolver.Resolve(ctx, tempNP)
-					if err != nil {
-						return nil, err
-					}
-
-					for _, endpoint := range cidrEgressEndpoints {
-						endpointInfos = append(endpointInfos, policyinfo.ClusterEndpointInfo{
-							CIDR:   endpoint.CIDR,
-							Ports:  endpoint.Ports,
-							Action: rule.Action,
-						})
-					}
+				for _, endpoint := range egressEndpoints {
+					endpointInfos = append(endpointInfos, policyinfo.ClusterEndpointInfo{
+						CIDR:   endpoint.CIDR,
+						Ports:  endpoint.Ports,
+						Action: rule.Action,
+					})
 				}
 			} else if len(peer.DomainNames) > 0 {
 				// Domain name peer - handle directly
@@ -323,6 +318,19 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPEgressRules(ctx contex
 	return r.mergeClusterEndpointInfo(endpointInfos), nil
 }
 
+// convertSingleCNPIngressRuleToNP builds a temporary NetworkPolicy that wraps a
+// single CNP ingress rule so it can be fed to baseResolver.Resolve(), which
+// only understands the upstream NetworkPolicy schema.
+//
+// Each CNP peer is mapped to an NP peer with an explicit NamespaceSelector
+// (Namespaces.* or Pods.NamespaceSelector). Because every NP peer carries an
+// explicit NamespaceSelector, baseResolver.resolvePeerNamespaces resolves peer
+// namespaces from the selector itself and ignores the temp NP's namespace —
+// so a single Resolve() call returns endpoints across all matching namespaces.
+//
+// The `namespace` argument is used only for named-port resolution against the
+// policy's destination pods (subject pods); callers pass the CNP's subject
+// namespace.
 func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPIngressRuleToNP(cnp *policyinfo.ClusterNetworkPolicy, rule policyinfo.ClusterNetworkPolicyIngressRule, namespace string) *networking.NetworkPolicy {
 	// Convert CNP ingress peers to NP peers
 	var npPeers []networking.NetworkPolicyPeer
@@ -356,6 +364,18 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPIngressRuleToNP(
 	}
 }
 
+// convertSingleCNPEgressRuleToNP builds a temporary NetworkPolicy that wraps a
+// single CNP egress rule so it can be fed to baseResolver.Resolve().
+//
+// Networks (CIDRs) become NP IPBlock peers (one per CIDR). Namespace/Pod peers
+// map to NP peers with explicit NamespaceSelector — baseResolver resolves all
+// matching namespaces internally, so a single Resolve() call covers the full
+// peer set without an outer namespace loop. DomainNames are skipped here and
+// emitted directly by the caller.
+//
+// The `namespace` argument is unused by baseResolver for egress in practice:
+// egress named ports resolve against destination (peer) pods per-peer, and
+// CIDR peers are namespace-agnostic.
 func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPEgressRuleToNP(cnp *policyinfo.ClusterNetworkPolicy, rule policyinfo.ClusterNetworkPolicyEgressRule, namespace string) *networking.NetworkPolicy {
 	// Convert only CIDR/namespace/pod peers, skip domainNames
 	var npPeers []networking.NetworkPolicyPeer
@@ -402,38 +422,65 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPEgressRuleToNP(c
 	}
 }
 func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPIngressRules(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) ([]policyinfo.ClusterEndpointInfo, error) {
+	// Determine subject namespace for named port resolution.
+	// Named ports resolve against the policy's destination pods (subject pods).
+	subjectNamespace, err := r.getSubjectNamespace(ctx, cnp)
+	if err != nil {
+		return nil, fmt.Errorf("err in resolving CNP ingress rules %w", err)
+	}
+
 	var allIngressRules []policyinfo.ClusterEndpointInfo
-
 	for _, rule := range cnp.Spec.Ingress {
-		var podNSSelector *metav1.LabelSelector
-		if len(rule.From) > 0 && rule.From[0].Pods != nil {
-			podNSSelector = &rule.From[0].Pods.NamespaceSelector
-		}
-		var nsSelector *metav1.LabelSelector
-		if len(rule.From) > 0 {
-			nsSelector = rule.From[0].Namespaces
+		// Mirrors the NetworkPolicy → PolicyEndpoint behavior in
+		// computeIngressEndpoints (pkg/resolvers/endpoints.go), which skips
+		// an ingress rule when its named ports cannot be resolved against
+		// destination pods. Here we short-circuit early when the subject
+		// selector matched no namespaces, so we know there are no
+		// destination pods to resolve named ports against.
+		if subjectNamespace == "" && hasNamedCNPPorts(rule.Ports) {
+			r.logger.Info("Skipping CNP ingress rule with named ports because subject selector matched no namespaces",
+				"policy", cnp.Name, "rule", rule.Name)
+			continue
 		}
 
-		targetNamespaces, err := r.resolveTargetNamespaces(ctx, nsSelector, podNSSelector)
+		tempNP := r.convertSingleCNPIngressRuleToNP(cnp, rule, subjectNamespace)
+		ingressRules, _, _, err := r.baseResolver.Resolve(ctx, tempNP)
 		if err != nil {
 			return nil, err
 		}
-		for _, ns := range targetNamespaces {
-			tempNP := r.convertSingleCNPIngressRuleToNP(cnp, rule, ns)
-			ingressRules, _, _, err := r.baseResolver.Resolve(ctx, tempNP)
-			if err != nil {
-				return nil, err
-			}
 
-			for _, endpoint := range ingressRules {
-				allIngressRules = append(allIngressRules, policyinfo.ClusterEndpointInfo{
-					CIDR:   endpoint.CIDR,
-					Ports:  endpoint.Ports,
-					Action: rule.Action,
-				})
-			}
+		for _, endpoint := range ingressRules {
+			allIngressRules = append(allIngressRules, policyinfo.ClusterEndpointInfo{
+				CIDR:   endpoint.CIDR,
+				Ports:  endpoint.Ports,
+				Action: rule.Action,
+			})
 		}
 	}
 
 	return r.mergeClusterEndpointInfo(allIngressRules), nil
+}
+
+func (r *clusterNetworkPolicyEndpointsResolver) getSubjectNamespace(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) (string, error) {
+	if cnp.Spec.Subject.Pods != nil {
+		namespaces, err := r.resolveNamespacesBySelector(ctx, cnp.Spec.Subject.Pods.NamespaceSelector)
+		if err != nil {
+			return "", fmt.Errorf("err in getting subject namespaces using Pods.NamespaceSelector %w", err)
+		}
+		if len(namespaces) > 0 {
+			return namespaces[0], nil
+		}
+	} else if cnp.Spec.Subject.Namespaces != nil {
+		namespaces, err := r.resolveNamespacesBySelector(ctx, *cnp.Spec.Subject.Namespaces)
+		if err != nil {
+			return "", fmt.Errorf("err in getting subject namespaces using Subject.Namespaces %w", err)
+		}
+		if len(namespaces) > 0 {
+			return namespaces[0], nil
+		}
+	}
+	// No namespace matched the subject selector. Returning empty namespace
+	// lets callers decide whether they can safely proceed without a concrete
+	// subject namespace.
+	return "", nil
 }
