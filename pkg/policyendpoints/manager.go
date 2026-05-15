@@ -98,6 +98,8 @@ type policyEndpointsManager struct {
 }
 
 func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error {
+	computeStart := time.Now()
+
 	ingressRules, egressRules, podSelectorEndpoints, err := m.endpointsResolver.Resolve(ctx, policy)
 	if err != nil {
 		return err
@@ -118,7 +120,10 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 	if err != nil {
 		return err
 	}
-	m.logger.Info("Got policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+
+	computeDuration := time.Since(computeStart)
+	crudStart := time.Now()
+
 	for i := range createList {
 		setLastChangeTriggerTime(&createList[i])
 		if err := m.k8sClient.Create(ctx, &createList[i]); err != nil {
@@ -150,6 +155,10 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
 
+	m.logger.Info("NP reconcile phase durations", "policy", policy.Name, "namespace", policy.Namespace,
+		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
+
 	return nil
 }
 
@@ -170,6 +179,8 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 }
 
 func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyinfo.ApplicationNetworkPolicy) error {
+	computeStart := time.Now()
+
 	ingressRules, egressRules, podSelectorEndpoints, err := m.anpEndpointsResolver.ResolveApplicationNetworkPolicy(ctx, anp)
 	if err != nil {
 		return err
@@ -190,7 +201,9 @@ func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyin
 	if err != nil {
 		return err
 	}
-	m.logger.Info("Got ANP policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+
+	computeDuration := time.Since(computeStart)
+	crudStart := time.Now()
 
 	for i := range createList {
 		setLastChangeTriggerTime(&createList[i])
@@ -222,6 +235,10 @@ func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyin
 		}
 		m.logger.Info("Deleted ANP policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
+
+	m.logger.Info("ANP reconcile phase durations", "policy", anp.Name, "namespace", anp.Namespace,
+		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
 
 	return nil
 }
@@ -732,6 +749,8 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 }
 
 func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) error {
+	computeStart := time.Now()
+
 	ingressRules, egressRules, podSelectorEndpoints, err := m.cnpEndpointsResolver.ResolveClusterNetworkPolicy(ctx, cnp)
 	if err != nil {
 		return err
@@ -751,7 +770,8 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 		return err
 	}
 
-	m.logger.Info("Got cluster policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+	computeDuration := time.Since(computeStart)
+	crudStart := time.Now()
 
 	// Create, update, delete ClusterPolicyEndpoints
 	for i := range createList {
@@ -784,6 +804,10 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 		}
 		m.logger.Info("Deleted cluster policy endpoint", "name", cpe.Name)
 	}
+
+	m.logger.Info("CNP reconcile phase durations", "policy", cnp.Name,
+		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
 
 	return nil
 }
