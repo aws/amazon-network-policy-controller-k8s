@@ -1244,7 +1244,7 @@ func TestGetSubjectNamespace(t *testing.T) {
 	tests := []struct {
 		name        string
 		subject     policyinfo.ClusterNetworkPolicySubject
-		wantOneOf   []string // List order non-deterministic; any match is OK.
+		want        string // expected exact namespace (sort.Strings makes this deterministic)
 		wantEmpty   bool
 		expectError bool
 	}{
@@ -1256,21 +1256,45 @@ func TestGetSubjectNamespace(t *testing.T) {
 					PodSelector:       metav1.LabelSelector{},
 				},
 			},
-			wantOneOf: []string{"prod-ns"},
+			want: "prod-ns",
 		},
 		{
 			name: "Namespaces subject with matching label",
 			subject: policyinfo.ClusterNetworkPolicySubject{
 				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "dev"}},
 			},
-			wantOneOf: []string{"dev-ns"},
+			want: "dev-ns",
 		},
 		{
-			name: "Namespaces subject with empty selector returns some namespace",
+			name: "Namespaces subject with empty selector returns alphabetically first",
 			subject: policyinfo.ClusterNetworkPolicySubject{
 				Namespaces: &metav1.LabelSelector{},
 			},
-			wantOneOf: []string{"prod-ns", "dev-ns"},
+			want: "dev-ns", // sort.Strings(["prod-ns","dev-ns"])[0] == "dev-ns"
+		},
+		{
+			name: "Namespaces subject matching multiple namespaces returns alphabetically first",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod", "dev"}},
+					},
+				},
+			},
+			want: "dev-ns",
+		},
+		{
+			name: "Pods subject matching multiple namespaces returns alphabetically first",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Pods: &policyinfo.NamespacedPod{
+					NamespaceSelector: metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod", "dev"}},
+						},
+					},
+				},
+			},
+			want: "dev-ns",
 		},
 		{
 			name: "Pods subject with no matching namespace returns empty",
@@ -1307,7 +1331,7 @@ func TestGetSubjectNamespace(t *testing.T) {
 			if tc.wantEmpty {
 				assert.Empty(t, got)
 			} else {
-				assert.Contains(t, tc.wantOneOf, got)
+				assert.Equal(t, tc.want, got)
 			}
 		})
 	}
@@ -1455,4 +1479,107 @@ func TestResolveCNPIngressRules_NamedPortsWithoutSubjectNamespaceSkipsRule(t *te
 
 	assert.NoError(t, err)
 	assert.Empty(t, result)
+}
+
+// Asserts named-port resolution honors Subject.Pods.PodSelector — non-subject
+// pods in the subject namespace must not contribute their containerPort even
+// if they declare the same named port.
+func TestResolveCNPIngressRules_NamedPortRespectsSubjectPodSelector(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	subjectNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-alpha", Labels: map[string]string{"team": "alpha"}},
+	}
+	peerNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "client-ns", Labels: map[string]string{"role": "client"}},
+	}
+	// Subject pod: matches Subject.Pods.PodSelector {app=web}, declares http=8080.
+	webPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-1",
+			Namespace: "team-alpha",
+			Labels:    map[string]string{"app": "web"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "web",
+					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.1.1"},
+	}
+	// Non-subject pod: same namespace, app=db, declares http=9999.
+	dbPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "db-1",
+			Namespace: "team-alpha",
+			Labels:    map[string]string{"app": "db"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "db",
+					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 9999, Protocol: corev1.ProtocolTCP}},
+				},
+			},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.1.2"},
+	}
+	clientPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "client-1",
+			Namespace: "client-ns",
+			Labels:    map[string]string{"app": "client"},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.2.1"},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(subjectNS, peerNS, webPod, dbPod, clientPod).
+		Build()
+	baseResolver := NewEndpointsResolver(fakeClient, logr.Discard())
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: baseResolver,
+		logger:       logr.Discard(),
+	}
+
+	namedPort := "http"
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-ingress-named-port"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Pods: &policyinfo.NamespacedPod{
+					NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"team": "alpha"}},
+					PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+				},
+			},
+			Ingress: []policyinfo.ClusterNetworkPolicyIngressRule{
+				{
+					Name:   "allow-http",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					From: []policyinfo.ClusterNetworkPolicyIngressPeer{
+						{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "client"}}},
+					},
+					Ports: &[]policyinfo.ClusterNetworkPolicyPort{{NamedPort: &namedPort}},
+				},
+			},
+		},
+	}
+
+	result, err := resolver.resolveCNPIngressRules(context.Background(), cnp)
+	assert.NoError(t, err)
+	assert.Len(t, result, 1)
+
+	// Resolved ports must include only 8080 (web pod), NOT 9999 (db pod).
+	assert.Len(t, result[0].Ports, 1, "named-port resolution should not leak non-subject pod's port")
+	if len(result[0].Ports) > 0 && result[0].Ports[0].Port != nil {
+		assert.Equal(t, int32(8080), *result[0].Ports[0].Port)
+	}
 }

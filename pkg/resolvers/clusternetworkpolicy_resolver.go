@@ -3,6 +3,7 @@ package resolvers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
@@ -213,8 +214,13 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertCNPPortsToNPPorts(cnpPort
 			})
 		}
 		if cnpPort.NamedPort != nil {
+			// CNP NamedPort has no Protocol field; default to TCP to match
+			// the kubebuilder default on PortNumber/PortRange and prevent
+			// nil-protocol panics in baseResolver.getPortList. This is coming because of CNP to NP API translation.
+			tcp := corev1.ProtocolTCP
 			npPorts = append(npPorts, networking.NetworkPolicyPort{
-				Port: &intstr.IntOrString{Type: intstr.String, StrVal: *cnpPort.NamedPort},
+				Protocol: &tcp,
+				Port:     &intstr.IntOrString{Type: intstr.String, StrVal: *cnpPort.NamedPort},
 			})
 		}
 	}
@@ -263,7 +269,7 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPEgressRules(ctx contex
 
 	subjectNamespace, err := r.getSubjectNamespace(ctx, cnp)
 	if err != nil {
-		return nil, fmt.Errorf("err in resolving CNP egress rules %w", err)
+		return nil, fmt.Errorf("resolving CNP egress rules: %w", err)
 	}
 
 	for _, rule := range cnp.Spec.Egress {
@@ -353,13 +359,22 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPIngressRuleToNP(
 		ingressRule.Ports = r.convertCNPPortsToNPPorts(*rule.Ports)
 	}
 
+	// Set the temp NP's PodSelector to the CNP's subject pod selector so that
+	// named-port resolution (baseResolver.getIngressRulesPorts) only inspects
+	// destination (subject) pods.
+	var subjectPodSelector metav1.LabelSelector
+	if cnp.Spec.Subject.Pods != nil {
+		subjectPodSelector = cnp.Spec.Subject.Pods.PodSelector
+	}
+
 	return &networking.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cnp.Name,
 			Namespace: namespace,
 		},
 		Spec: networking.NetworkPolicySpec{
-			Ingress: []networking.NetworkPolicyIngressRule{ingressRule},
+			PodSelector: subjectPodSelector,
+			Ingress:     []networking.NetworkPolicyIngressRule{ingressRule},
 		},
 	}
 }
@@ -373,9 +388,13 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPIngressRuleToNP(
 // peer set without an outer namespace loop. DomainNames are skipped here and
 // emitted directly by the caller.
 //
-// The `namespace` argument is unused by baseResolver for egress in practice:
-// egress named ports resolve against destination (peer) pods per-peer, and
-// CIDR peers are namespace-agnostic.
+// The `namespace` argument is set on the temp NP only to keep the
+// NetworkPolicy object well-formed; baseResolver does not consult it for
+// egress so long as every converted peer carries an explicit
+// NamespaceSelector (which is true for CNP-converted peers). Egress named
+// ports resolve against destination (peer) pods per-peer, and CIDR peers are
+// namespace-agnostic. Callers pass the CNP's subject namespace for
+// consistency with the ingress path.
 func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPEgressRuleToNP(cnp *policyinfo.ClusterNetworkPolicy, rule policyinfo.ClusterNetworkPolicyEgressRule, namespace string) *networking.NetworkPolicy {
 	// Convert only CIDR/namespace/pod peers, skip domainNames
 	var npPeers []networking.NetworkPolicyPeer
@@ -421,12 +440,13 @@ func (r *clusterNetworkPolicyEndpointsResolver) convertSingleCNPEgressRuleToNP(c
 		},
 	}
 }
+
 func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPIngressRules(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) ([]policyinfo.ClusterEndpointInfo, error) {
 	// Determine subject namespace for named port resolution.
 	// Named ports resolve against the policy's destination pods (subject pods).
 	subjectNamespace, err := r.getSubjectNamespace(ctx, cnp)
 	if err != nil {
-		return nil, fmt.Errorf("err in resolving CNP ingress rules %w", err)
+		return nil, fmt.Errorf("resolving CNP ingress rules: %w", err)
 	}
 
 	var allIngressRules []policyinfo.ClusterEndpointInfo
@@ -461,21 +481,33 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPIngressRules(ctx conte
 	return r.mergeClusterEndpointInfo(allIngressRules), nil
 }
 
+// getSubjectNamespace returns a single namespace from those matching the
+// CNP subject selector, used by callers for named-port resolution against
+// destination pods. The namespace list is sorted before picking [0] so the
+// choice is deterministic across reconciles — k8sClient.List() ordering is
+// not guaranteed stable, and an unstable choice would flip resolved named
+// ports between reconciles when the subject spans multiple namespaces.
+//
+// Note: this is a best-effort approximation. When the subject spans multiple
+// namespaces with named ports declared on different containerPort values,
+// only the chosen namespace's pods contribute to resolution. This is a limitation of the current CPE schema
 func (r *clusterNetworkPolicyEndpointsResolver) getSubjectNamespace(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) (string, error) {
 	if cnp.Spec.Subject.Pods != nil {
 		namespaces, err := r.resolveNamespacesBySelector(ctx, cnp.Spec.Subject.Pods.NamespaceSelector)
 		if err != nil {
-			return "", fmt.Errorf("err in getting subject namespaces using Pods.NamespaceSelector %w", err)
+			return "", fmt.Errorf("resolving subject namespaces from Pods.NamespaceSelector: %w", err)
 		}
 		if len(namespaces) > 0 {
+			sort.Strings(namespaces)
 			return namespaces[0], nil
 		}
 	} else if cnp.Spec.Subject.Namespaces != nil {
 		namespaces, err := r.resolveNamespacesBySelector(ctx, *cnp.Spec.Subject.Namespaces)
 		if err != nil {
-			return "", fmt.Errorf("err in getting subject namespaces using Subject.Namespaces %w", err)
+			return "", fmt.Errorf("resolving subject namespaces from Subject.Namespaces: %w", err)
 		}
 		if len(namespaces) > 0 {
+			sort.Strings(namespaces)
 			return namespaces[0], nil
 		}
 	}
