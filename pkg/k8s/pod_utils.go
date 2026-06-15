@@ -63,15 +63,23 @@ func StripDownPodTransformFunc(obj interface{}) (interface{}, error) {
 }
 
 // stripDownPodObject provides an stripDown version of pod to reduce memory usage.
-// NOTE: if the controller needs to refer to more pod fields in the future these fields need to be added to the cache
+// NOTE: if the controller needs to refer to more pod fields in the future these fields need to be added to the cache.
+// Only annotation key the controller reads is podIPAnnotation (see GetPodIP); every
+// other annotation is dropped so the cache holds at most one annotation per pod.
+// Labels are preserved because policy podSelectors match against them, including on
+// Delete events (see resolvers.isPodMatchesPolicySelector).
 func stripDownPodObject(pod *corev1.Pod) *corev1.Pod {
+	var prunedAnnotations map[string]string
+	if v, ok := pod.Annotations[podIPAnnotation]; ok {
+		prunedAnnotations = map[string]string{podIPAnnotation: v}
+	}
 	pod.ObjectMeta = metav1.ObjectMeta{
 		Name:              pod.Name,
 		Namespace:         pod.Namespace,
 		UID:               pod.UID,
 		DeletionTimestamp: pod.DeletionTimestamp,
 		Labels:            pod.Labels,
-		Annotations:       pod.Annotations,
+		Annotations:       prunedAnnotations,
 		ResourceVersion:   pod.ResourceVersion,
 		Finalizers:        pod.Finalizers,
 	}

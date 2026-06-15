@@ -2,8 +2,8 @@
 replicaCount: 2
 
 image:
-  repository: public.ecr.aws/eks/amazon-network-policy-controller-k8s
-  tag: v1.0.4
+  repository: 602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/amazon-network-policy-controller-k8s
+  tag: v1.1.6-eksbuild.1
   pullPolicy: IfNotPresent
   override: ""
 

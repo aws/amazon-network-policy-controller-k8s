@@ -388,7 +388,10 @@ func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networkin
 // convertToPolicyInfoPortForCIDRs converts the NetworkPolicyPort to policyinfo.Port. This is used for CIDR based
 // rules where it is not possible to resolve the named ports.
 func (r *defaultEndpointsResolver) convertToPolicyInfoPortForCIDRs(port networking.NetworkPolicyPort) *policyinfo.Port {
-	protocol := *port.Protocol
+	protocol := corev1.ProtocolTCP
+	if port.Protocol != nil {
+		protocol = *port.Protocol
+	}
 	switch {
 	case port.Port == nil:
 		return &policyinfo.Port{

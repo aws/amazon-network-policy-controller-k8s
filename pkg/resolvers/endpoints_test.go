@@ -498,6 +498,79 @@ func TestEndpointsResolver_Resolve(t *testing.T) {
 			},
 		},
 		{
+			name: "egress ipBlock CIDR with nil Protocol defaults to TCP",
+			args: args{
+				netpol: &networking.NetworkPolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "nil-proto",
+						Namespace: "ns",
+					},
+					Spec: networking.NetworkPolicySpec{
+						PodSelector: metav1.LabelSelector{},
+						PolicyTypes: []networking.PolicyType{networking.PolicyTypeEgress},
+						Egress: []networking.NetworkPolicyEgressRule{
+							{
+								To: []networking.NetworkPolicyPeer{
+									{
+										IPBlock: &networking.IPBlock{
+											CIDR: "10.20.10.0/24",
+										},
+									},
+								},
+								Ports: []networking.NetworkPolicyPort{
+									{
+										Port: &intOrStrPort80,
+									},
+								},
+							},
+						},
+					},
+				},
+				podListCalls: []podListCall{
+					{
+						pods: []corev1.Pod{},
+					},
+				},
+			},
+			wantEgressEndpoints: []policyinfo.EndpointInfo{
+				{CIDR: "10.20.10.0/24", Ports: []policyinfo.Port{{Protocol: &protocolTCP, Port: &port80}}},
+			},
+		},
+		{
+			name: "egress ipBlock CIDR with nil Ports allows all traffic",
+			args: args{
+				netpol: &networking.NetworkPolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "nil-ports",
+						Namespace: "ns",
+					},
+					Spec: networking.NetworkPolicySpec{
+						PodSelector: metav1.LabelSelector{},
+						PolicyTypes: []networking.PolicyType{networking.PolicyTypeEgress},
+						Egress: []networking.NetworkPolicyEgressRule{
+							{
+								To: []networking.NetworkPolicyPeer{
+									{
+										IPBlock: &networking.IPBlock{
+											CIDR: "10.20.10.0/24",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				podListCalls: []podListCall{
+					{
+						pods: []corev1.Pod{},
+					},
+				},
+			},
+			wantEgressEndpoints: []policyinfo.EndpointInfo{
+				{CIDR: "10.20.10.0/24"},
+			},
+		},
+		{
 			name: "allow all, ingress/egress to specific ports",
 			args: args{
 				netpol: &networking.NetworkPolicy{

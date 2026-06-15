@@ -98,6 +98,8 @@ type policyEndpointsManager struct {
 }
 
 func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error {
+	computeStart := time.Now()
+
 	ingressRules, egressRules, podSelectorEndpoints, err := m.endpointsResolver.Resolve(ctx, policy)
 	if err != nil {
 		return err
@@ -118,7 +120,10 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 	if err != nil {
 		return err
 	}
-	m.logger.Info("Got policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+
+	computeDuration := time.Since(computeStart)
+	crudStart := time.Now()
+
 	for i := range createList {
 		setLastChangeTriggerTime(&createList[i])
 		if err := m.k8sClient.Create(ctx, &createList[i]); err != nil {
@@ -150,6 +155,10 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
 
+	m.logger.Info("NP reconcile phase durations", "policy", policy.Name, "namespace", policy.Namespace,
+		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
+
 	return nil
 }
 
@@ -170,6 +179,8 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 }
 
 func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyinfo.ApplicationNetworkPolicy) error {
+	computeStart := time.Now()
+
 	ingressRules, egressRules, podSelectorEndpoints, err := m.anpEndpointsResolver.ResolveApplicationNetworkPolicy(ctx, anp)
 	if err != nil {
 		return err
@@ -190,7 +201,9 @@ func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyin
 	if err != nil {
 		return err
 	}
-	m.logger.Info("Got ANP policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+
+	computeDuration := time.Since(computeStart)
+	crudStart := time.Now()
 
 	for i := range createList {
 		setLastChangeTriggerTime(&createList[i])
@@ -222,6 +235,10 @@ func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyin
 		}
 		m.logger.Info("Deleted ANP policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
+
+	m.logger.Info("ANP reconcile phase durations", "policy", anp.Name, "namespace", anp.Namespace,
+		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
 
 	return nil
 }
@@ -315,17 +332,21 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 	return newPEs
 }
 
-// getCombineKey creates a combining key from CIDR and sorted exceptions
-func getCombineKey(iep policyinfo.EndpointInfo) string {
-	key := string(iep.CIDR) + "|"
+// getCombineKey creates a combining key from CIDR or DomainName and sorted exceptions,
+// excluding ports so that entries with the same network identity get merged.
+func getCombineKey(ep policyinfo.EndpointInfo) string {
+	var key string
+	if ep.DomainName != "" {
+		key = "fqdn|" + string(ep.DomainName) + "|"
+	} else {
+		key = "cidr|" + string(ep.CIDR) + "|"
+	}
 
-	// Sort exceptions for order-independence
-	sortedExcepts := make([]policyinfo.NetworkAddress, len(iep.Except))
-	copy(sortedExcepts, iep.Except)
+	sortedExcepts := make([]policyinfo.NetworkAddress, len(ep.Except))
+	copy(sortedExcepts, ep.Except)
 	sort.Slice(sortedExcepts, func(i, j int) bool {
 		return string(sortedExcepts[i]) < string(sortedExcepts[j])
 	})
-
 	for _, except := range sortedExcepts {
 		key += string(except) + "|"
 	}
@@ -361,30 +382,11 @@ func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyi
 func (m *policyEndpointsManager) processANPPolicyEndpoints(pes []policyinfo.PolicyEndpoint) []policyinfo.PolicyEndpoint {
 	var newPEs []policyinfo.PolicyEndpoint
 	for _, pe := range pes {
-		pe.Spec.Ingress = m.combineANPRulesEndpoints(pe.Spec.Ingress)
-		pe.Spec.Egress = m.combineANPRulesEndpoints(pe.Spec.Egress)
+		pe.Spec.Ingress = combineRulesEndpoints(pe.Spec.Ingress)
+		pe.Spec.Egress = combineRulesEndpoints(pe.Spec.Egress)
 		newPEs = append(newPEs, pe)
 	}
 	return newPEs
-}
-
-// combineANPRulesEndpoints handles both CIDR and FQDN endpoints
-func (m *policyEndpointsManager) combineANPRulesEndpoints(endpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
-	combinedMap := make(map[string]policyinfo.EndpointInfo)
-	for _, ep := range endpoints {
-		key := m.getEndpointInfoKey(ep) // Uses hash that handles both CIDR and FQDN
-		if existing, ok := combinedMap[key]; ok {
-			existing.Ports = append(existing.Ports, ep.Ports...)
-			existing.Except = append(existing.Except, ep.Except...)
-			combinedMap[key] = existing
-		} else {
-			combinedMap[key] = ep
-		}
-	}
-	if len(combinedMap) > 0 {
-		return maps.Values(combinedMap)
-	}
-	return nil
 }
 
 func (m *policyEndpointsManager) newPolicyEndpoint(metadata PolicyMetadata,
@@ -732,6 +734,8 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 }
 
 func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) error {
+	computeStart := time.Now()
+
 	ingressRules, egressRules, podSelectorEndpoints, err := m.cnpEndpointsResolver.ResolveClusterNetworkPolicy(ctx, cnp)
 	if err != nil {
 		return err
@@ -751,7 +755,8 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 		return err
 	}
 
-	m.logger.Info("Got cluster policy endpoints lists", "create", len(createList), "update", len(updateList), "delete", len(deleteList))
+	computeDuration := time.Since(computeStart)
+	crudStart := time.Now()
 
 	// Create, update, delete ClusterPolicyEndpoints
 	for i := range createList {
@@ -784,6 +789,10 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 		}
 		m.logger.Info("Deleted cluster policy endpoint", "name", cpe.Name)
 	}
+
+	m.logger.Info("CNP reconcile phase durations", "policy", cnp.Name,
+		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
 
 	return nil
 }

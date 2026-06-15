@@ -937,33 +937,283 @@ func Test_processANPPolicyEndpoints(t *testing.T) {
 	}
 
 	port443 := int32(443)
+	port80 := int32(80)
 	pTCP := corev1.ProtocolTCP
 
-	pes := m.processANPPolicyEndpoints([]policyinfo.PolicyEndpoint{
-		{
-			Spec: policyinfo.PolicyEndpointSpec{
-				Egress: []policyinfo.EndpointInfo{
-					{
-						DomainName: "example.com",
-						Ports: []policyinfo.Port{
-							{Port: &port443, Protocol: &pTCP},
+	t.Run("same FQDN with different ports combines and deduplicates", func(t *testing.T) {
+		pes := m.processANPPolicyEndpoints([]policyinfo.PolicyEndpoint{
+			{
+				Spec: policyinfo.PolicyEndpointSpec{
+					Egress: []policyinfo.EndpointInfo{
+						{
+							DomainName: "example.com",
+							Ports: []policyinfo.Port{
+								{Port: &port443, Protocol: &pTCP},
+							},
 						},
-					},
-					{
-						DomainName: "example.com",
-						Ports: []policyinfo.Port{
-							{Port: &port443, Protocol: &pTCP},
+						{
+							DomainName: "example.com",
+							Ports: []policyinfo.Port{
+								{Port: &port80, Protocol: &pTCP},
+							},
 						},
 					},
 				},
 			},
-		},
+		})
+
+		assert.Equal(t, 1, len(pes))
+		assert.Equal(t, 1, len(pes[0].Spec.Egress))
+		assert.Equal(t, policyinfo.DomainName("example.com"), pes[0].Spec.Egress[0].DomainName)
+		assert.Equal(t, 2, len(pes[0].Spec.Egress[0].Ports))
 	})
 
-	assert.Equal(t, 1, len(pes))
-	assert.Equal(t, 1, len(pes[0].Spec.Egress))
-	assert.Equal(t, policyinfo.DomainName("example.com"), pes[0].Spec.Egress[0].DomainName)
-	assert.Equal(t, 2, len(pes[0].Spec.Egress[0].Ports))
+	t.Run("duplicate entries are deduplicated to single port", func(t *testing.T) {
+		pes := m.processANPPolicyEndpoints([]policyinfo.PolicyEndpoint{
+			{
+				Spec: policyinfo.PolicyEndpointSpec{
+					Egress: []policyinfo.EndpointInfo{
+						{
+							DomainName: "example.com",
+							Ports: []policyinfo.Port{
+								{Port: &port443, Protocol: &pTCP},
+							},
+						},
+						{
+							DomainName: "example.com",
+							Ports: []policyinfo.Port{
+								{Port: &port443, Protocol: &pTCP},
+							},
+						},
+					},
+				},
+			},
+		})
+
+		assert.Equal(t, 1, len(pes))
+		assert.Equal(t, 1, len(pes[0].Spec.Egress))
+		assert.Equal(t, policyinfo.DomainName("example.com"), pes[0].Spec.Egress[0].DomainName)
+		assert.Equal(t, 1, len(pes[0].Spec.Egress[0].Ports), "Duplicate ports should be deduplicated")
+	})
+}
+
+func Test_combineRulesEndpoints(t *testing.T) {
+	port80 := int32(80)
+	port443 := int32(443)
+	port8080 := int32(8080)
+	pTCP := corev1.ProtocolTCP
+	pUDP := corev1.ProtocolUDP
+
+	t.Run("same FQDN different ports should combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result), "Same FQDN with different ports should combine into one entry")
+		assert.Equal(t, policyinfo.DomainName("example.com"), result[0].DomainName)
+		assert.Equal(t, 2, len(result[0].Ports), "Both ports should be present after combining")
+	})
+
+	t.Run("same CIDR different ports should combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port8080, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result), "Same CIDR with different ports should combine into one entry")
+		assert.Equal(t, policyinfo.NetworkAddress("10.0.0.0/8"), result[0].CIDR)
+		assert.Equal(t, 3, len(result[0].Ports), "All three ports should be present after combining")
+	})
+
+	t.Run("same FQDN all-ports entry wins", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{}, // empty = all ports
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result), "Same FQDN should combine")
+		assert.Equal(t, 0, len(result[0].Ports), "All-ports (empty) should take precedence")
+	})
+
+	t.Run("same CIDR with exceptions different ports should combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				CIDR:   "10.0.0.0/8",
+				Except: []policyinfo.NetworkAddress{"10.1.0.0/16"},
+				Ports:  []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:   "10.0.0.0/8",
+				Except: []policyinfo.NetworkAddress{"10.1.0.0/16"},
+				Ports:  []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result), "Same CIDR+exceptions with different ports should combine")
+		assert.Equal(t, 2, len(result[0].Ports))
+	})
+
+	t.Run("different CIDRs should not combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:  "172.16.0.0/12",
+				Ports: []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 2, len(result), "Different CIDRs should remain separate")
+	})
+
+	t.Run("different FQDNs should not combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+			{
+				DomainName: "other.com",
+				Ports:      []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 2, len(result), "Different FQDNs should remain separate")
+	})
+
+	t.Run("same CIDR different exceptions should not combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				CIDR:   "10.0.0.0/8",
+				Except: []policyinfo.NetworkAddress{"10.1.0.0/16"},
+				Ports:  []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:   "10.0.0.0/8",
+				Except: []policyinfo.NetworkAddress{"10.2.0.0/16"},
+				Ports:  []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 2, len(result), "Same CIDR with different exceptions should remain separate")
+	})
+
+	t.Run("duplicate ports should be deduplicated", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				DomainName: "example.com",
+				Ports:      []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result))
+		assert.Equal(t, 1, len(result[0].Ports), "Duplicate ports should be deduplicated")
+	})
+
+	t.Run("same CIDR with exceptions in different order should combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				CIDR:   "10.0.0.0/8",
+				Except: []policyinfo.NetworkAddress{"192.168.0.0/16", "172.16.0.0/12"},
+				Ports:  []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:   "10.0.0.0/8",
+				Except: []policyinfo.NetworkAddress{"172.16.0.0/12", "192.168.0.0/16"},
+				Ports:  []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result), "Same exceptions in different order should combine")
+		assert.Equal(t, 2, len(result[0].Ports))
+	})
+
+	t.Run("mixed FQDN and CIDR should not combine", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				DomainName: "10.0.0.0/8",
+				Ports:      []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 2, len(result), "FQDN and CIDR entries should not combine even if string matches")
+	})
+
+	t.Run("CIDR entries with multiple ports and protocols combine correctly", func(t *testing.T) {
+		endpoints := []policyinfo.EndpointInfo{
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port80, Protocol: &pTCP}},
+			},
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Port: &port443, Protocol: &pTCP}},
+			},
+			{
+				CIDR:  "10.0.0.0/8",
+				Ports: []policyinfo.Port{{Protocol: &pUDP}},
+			},
+		}
+
+		result := combineRulesEndpoints(endpoints)
+
+		assert.Equal(t, 1, len(result))
+		assert.Equal(t, 3, len(result[0].Ports),
+			"All ports across protocols should be combined")
+	})
 }
 
 func Test_getEndpointInfoKey(t *testing.T) {

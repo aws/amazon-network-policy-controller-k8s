@@ -6,6 +6,7 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	corev1 "k8s.io/api/core/v1"
@@ -88,6 +89,30 @@ func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 	return restCFG, nil
 }
 
+// podCacheFieldSelector returns a server-side field selector applied to the Pod
+// informer. It drops two classes of pods that the controller never has anything
+// useful to do with, so they never reach the wire on the initial List/WatchList
+// nor occupy memory in the cache:
+//
+//   - terminal phase (Succeeded / Failed): IsPodNetworkReady already excludes
+//     them, but doing it server-side avoids decoding+storing them at all.
+//   - unscheduled (spec.nodeName == ""): such pods cannot have a Status.PodIP
+//     and the eventhandler early-returns when GetPodIP is empty
+//     (internal/eventhandlers/pod.go enqueueReferredPolicies).
+//
+// When a pod transitions out of the matching set (e.g. Running -> Succeeded),
+// the apiserver synthesizes a watch.Deleted event so the controller's existing
+// Delete handler can remove the pod from any PolicyEndpoints. When a pod
+// transitions into the matching set (scheduler assigns nodeName), the apiserver
+// synthesizes a watch.Added event.
+func podCacheFieldSelector() fields.Selector {
+	return fields.AndSelectors(
+		fields.OneTermNotEqualSelector("status.phase", string(corev1.PodSucceeded)),
+		fields.OneTermNotEqualSelector("status.phase", string(corev1.PodFailed)),
+		fields.OneTermNotEqualSelector("spec.nodeName", ""),
+	)
+}
+
 // BuildCacheOptions returns a cache.Options struct for this controller.
 func BuildCacheOptions() cache.Options {
 	cacheOptions := cache.Options{
@@ -95,6 +120,7 @@ func BuildCacheOptions() cache.Options {
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Pod{}: {
 				Transform: k8s.StripDownPodTransformFunc,
+				Field:     podCacheFieldSelector(),
 			},
 			&corev1.Service{}: {
 				Transform: k8s.StripDownServiceTransformFunc,

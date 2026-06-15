@@ -1102,3 +1102,484 @@ func TestClusterNetworkPolicyEndpointsResolver_resolveCNPIngressRules(t *testing
 	assert.Equal(t, "10.1.1.1", string(result[0].CIDR))
 	assert.Equal(t, policyinfo.ClusterNetworkPolicyRuleActionAccept, result[0].Action)
 }
+
+// Asserts Resolve() is called once per ingress rule, not per matched namespace.
+func TestResolveCNPIngressRules_SingleResolveCallPerRule(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	// 5 namespaces match the peer selector.
+	namespaces := make([]runtime.Object, 0, 5)
+	for i := 0; i < 5; i++ {
+		namespaces = append(namespaces, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   fmt.Sprintf("prod-ns-%d", i),
+				Labels: map[string]string{"env": "prod"},
+			},
+		})
+	}
+	subjectNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "subject-ns", Labels: map[string]string{"role": "subject"}},
+	}
+	namespaces = append(namespaces, subjectNS)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(namespaces...).
+		Build()
+
+	mockResolver := new(MockEndpointsResolver)
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: mockResolver,
+		logger:       logr.Discard(),
+	}
+
+	mockResolver.On("Resolve", mock.Anything, mock.Anything).Return(
+		[]policyinfo.EndpointInfo{{CIDR: "10.0.0.1"}},
+		[]policyinfo.EndpointInfo(nil),
+		[]policyinfo.PodEndpoint(nil),
+		nil,
+	)
+
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "subject"}},
+			},
+			Ingress: []policyinfo.ClusterNetworkPolicyIngressRule{
+				{
+					Name:   "rule-a",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					From:   []policyinfo.ClusterNetworkPolicyIngressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}}}},
+				},
+				{
+					Name:   "rule-b",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					From:   []policyinfo.ClusterNetworkPolicyIngressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}}}},
+				},
+			},
+		},
+	}
+
+	_, err := resolver.resolveCNPIngressRules(context.Background(), cnp)
+	assert.NoError(t, err)
+	// 2 rules × 5 matched namespaces → expect 2 calls (one per rule), not 10.
+	mockResolver.AssertNumberOfCalls(t, "Resolve", 2)
+}
+
+// Asserts Resolve() is called once per egress NS/Pod peer, not per matched namespace.
+func TestResolveCNPEgressRules_SingleResolveCallForNamespacePeer(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	namespaces := make([]runtime.Object, 0, 5)
+	for i := 0; i < 5; i++ {
+		namespaces = append(namespaces, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   fmt.Sprintf("prod-ns-%d", i),
+				Labels: map[string]string{"env": "prod"},
+			},
+		})
+	}
+	subjectNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "subject-ns", Labels: map[string]string{"role": "subject"}},
+	}
+	namespaces = append(namespaces, subjectNS)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(namespaces...).
+		Build()
+
+	mockResolver := new(MockEndpointsResolver)
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: mockResolver,
+		logger:       logr.Discard(),
+	}
+
+	mockResolver.On("Resolve", mock.Anything, mock.Anything).Return(
+		[]policyinfo.EndpointInfo(nil),
+		[]policyinfo.EndpointInfo{{CIDR: "10.0.0.1"}},
+		[]policyinfo.PodEndpoint(nil),
+		nil,
+	)
+
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "subject"}},
+			},
+			Egress: []policyinfo.ClusterNetworkPolicyEgressRule{
+				{
+					Name:   "rule-1",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					To:     []policyinfo.ClusterNetworkPolicyEgressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}}}},
+				},
+			},
+		},
+	}
+
+	_, err := resolver.resolveCNPEgressRules(context.Background(), cnp)
+	assert.NoError(t, err)
+	// NS peer matches 5 namespaces → expect 1 call, not 5.
+	mockResolver.AssertNumberOfCalls(t, "Resolve", 1)
+}
+
+// Covers getSubjectNamespace for Pods/Namespaces subject + no-match cases.
+func TestGetSubjectNamespace(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+
+	prodNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "prod-ns", Labels: map[string]string{"env": "prod"}}}
+	devNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dev-ns", Labels: map[string]string{"env": "dev"}}}
+
+	tests := []struct {
+		name        string
+		subject     policyinfo.ClusterNetworkPolicySubject
+		want        string // expected exact namespace (sort.Strings makes this deterministic)
+		wantEmpty   bool
+		expectError bool
+	}{
+		{
+			name: "Pods subject with matching namespace",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Pods: &policyinfo.NamespacedPod{
+					NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+					PodSelector:       metav1.LabelSelector{},
+				},
+			},
+			want: "prod-ns",
+		},
+		{
+			name: "Namespaces subject with matching label",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "dev"}},
+			},
+			want: "dev-ns",
+		},
+		{
+			name: "Namespaces subject with empty selector returns alphabetically first",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{},
+			},
+			want: "dev-ns", // sort.Strings(["prod-ns","dev-ns"])[0] == "dev-ns"
+		},
+		{
+			name: "Namespaces subject matching multiple namespaces returns alphabetically first",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod", "dev"}},
+					},
+				},
+			},
+			want: "dev-ns",
+		},
+		{
+			name: "Pods subject matching multiple namespaces returns alphabetically first",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Pods: &policyinfo.NamespacedPod{
+					NamespaceSelector: metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod", "dev"}},
+						},
+					},
+				},
+			},
+			want: "dev-ns",
+		},
+		{
+			name: "Pods subject with no matching namespace returns empty",
+			subject: policyinfo.ClusterNetworkPolicySubject{
+				Pods: &policyinfo.NamespacedPod{
+					NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"env": "nope"}},
+				},
+			},
+			wantEmpty: true,
+		},
+		{
+			name:      "empty subject returns empty",
+			subject:   policyinfo.ClusterNetworkPolicySubject{},
+			wantEmpty: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(prodNS, devNS).
+				Build()
+			resolver := &clusterNetworkPolicyEndpointsResolver{
+				k8sClient: fakeClient,
+				logger:    logr.Discard(),
+			}
+			cnp := &policyinfo.ClusterNetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec:       policyinfo.ClusterNetworkPolicySpec{Subject: tc.subject},
+			}
+			got, err := resolver.getSubjectNamespace(context.Background(), cnp)
+			assert.NoError(t, err)
+			if tc.wantEmpty {
+				assert.Empty(t, got)
+			} else {
+				assert.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
+// Asserts temp NP namespace = subject namespace (for named-port resolution).
+func TestResolveCNPIngressRules_TempNPNamespaceIsSubject(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	subjectNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "sub-ns", Labels: map[string]string{"role": "subject"}}}
+	peerNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "peer-ns", Labels: map[string]string{"env": "prod"}}}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(subjectNS, peerNS).
+		Build()
+
+	mockResolver := new(MockEndpointsResolver)
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: mockResolver,
+		logger:       logr.Discard(),
+	}
+
+	var capturedNS string
+	mockResolver.On("Resolve", mock.Anything, mock.MatchedBy(func(np *networking.NetworkPolicy) bool {
+		capturedNS = np.Namespace
+		return true
+	})).Return(
+		[]policyinfo.EndpointInfo(nil),
+		[]policyinfo.EndpointInfo(nil),
+		[]policyinfo.PodEndpoint(nil),
+		nil,
+	)
+
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "subject"}},
+			},
+			Ingress: []policyinfo.ClusterNetworkPolicyIngressRule{
+				{
+					Name:   "rule-1",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					From:   []policyinfo.ClusterNetworkPolicyIngressPeer{{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}}}},
+				},
+			},
+		},
+	}
+
+	_, err := resolver.resolveCNPIngressRules(context.Background(), cnp)
+	assert.NoError(t, err)
+	assert.Equal(t, "sub-ns", capturedNS) // subject ns, not peer ns
+}
+
+func TestResolveCNPIngressRules_NamedPortsWithoutSubjectNamespaceSkipsRule(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	peerNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "peer-ns",
+			Labels: map[string]string{"env": "prod"},
+		},
+	}
+	otherNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "other-ns",
+			Labels: map[string]string{"env": "other"},
+		},
+	}
+	peerPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "peer-pod",
+			Namespace: "peer-ns",
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.1.1.1",
+		},
+	}
+	unrelatedPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unrelated-pod",
+			Namespace: "other-ns",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "app",
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "http",
+							ContainerPort: 8080,
+							Protocol:      corev1.ProtocolTCP,
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.2.2.2",
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(peerNS, otherNS, peerPod, unrelatedPod).
+		Build()
+	baseResolver := NewEndpointsResolver(fakeClient, logr.Discard())
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: baseResolver,
+		logger:       logr.Discard(),
+	}
+
+	namedPort := "http"
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cnp"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "subject"}},
+			},
+			Ingress: []policyinfo.ClusterNetworkPolicyIngressRule{
+				{
+					Name:   "ingress-rule",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					From: []policyinfo.ClusterNetworkPolicyIngressPeer{
+						{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}}},
+					},
+					Ports: &[]policyinfo.ClusterNetworkPolicyPort{
+						{NamedPort: &namedPort},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := resolver.resolveCNPIngressRules(context.Background(), cnp)
+
+	assert.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+// Asserts named-port resolution honors Subject.Pods.PodSelector — non-subject
+// pods in the subject namespace must not contribute their containerPort even
+// if they declare the same named port.
+func TestResolveCNPIngressRules_NamedPortRespectsSubjectPodSelector(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	subjectNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-alpha", Labels: map[string]string{"team": "alpha"}},
+	}
+	peerNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "client-ns", Labels: map[string]string{"role": "client"}},
+	}
+	// Subject pod: matches Subject.Pods.PodSelector {app=web}, declares http=8080.
+	webPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-1",
+			Namespace: "team-alpha",
+			Labels:    map[string]string{"app": "web"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "web",
+					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.1.1"},
+	}
+	// Non-subject pod: same namespace, app=db, declares http=9999.
+	dbPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "db-1",
+			Namespace: "team-alpha",
+			Labels:    map[string]string{"app": "db"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "db",
+					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 9999, Protocol: corev1.ProtocolTCP}},
+				},
+			},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.1.2"},
+	}
+	clientPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "client-1",
+			Namespace: "client-ns",
+			Labels:    map[string]string{"app": "client"},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.2.1"},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(subjectNS, peerNS, webPod, dbPod, clientPod).
+		Build()
+	baseResolver := NewEndpointsResolver(fakeClient, logr.Discard())
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: baseResolver,
+		logger:       logr.Discard(),
+	}
+
+	namedPort := "http"
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-ingress-named-port"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Pods: &policyinfo.NamespacedPod{
+					NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"team": "alpha"}},
+					PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+				},
+			},
+			Ingress: []policyinfo.ClusterNetworkPolicyIngressRule{
+				{
+					Name:   "allow-http",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					From: []policyinfo.ClusterNetworkPolicyIngressPeer{
+						{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "client"}}},
+					},
+					Ports: &[]policyinfo.ClusterNetworkPolicyPort{{NamedPort: &namedPort}},
+				},
+			},
+		},
+	}
+
+	result, err := resolver.resolveCNPIngressRules(context.Background(), cnp)
+	assert.NoError(t, err)
+	assert.Len(t, result, 1)
+
+	// Resolved ports must include only 8080 (web pod), NOT 9999 (db pod).
+	assert.Len(t, result[0].Ports, 1, "named-port resolution should not leak non-subject pod's port")
+	if len(result[0].Ports) > 0 && result[0].Ports[0].Port != nil {
+		assert.Equal(t, int32(8080), *result[0].Ports[0].Port)
+	}
+}
