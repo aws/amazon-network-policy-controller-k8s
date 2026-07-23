@@ -75,3 +75,13 @@ func (s *ConfigMapStore) Replace(list []interface{}, resourceVersion string) err
 func (s *ConfigMapStore) Resync() error {
 	return s.store.Resync()
 }
+
+// Bookmark observes a new resource version passed into it and updates the underlying store
+func (s *ConfigMapStore) Bookmark(rv string) {
+	s.store.Bookmark(rv)
+}
+
+// LastStoreSyncResourceVersion returns the latest resource version that the underlying store has seen
+func (s *ConfigMapStore) LastStoreSyncResourceVersion() string {
+	return s.store.LastStoreSyncResourceVersion()
+}
