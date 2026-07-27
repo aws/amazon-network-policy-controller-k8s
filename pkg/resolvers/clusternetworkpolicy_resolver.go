@@ -273,55 +273,55 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPEgressRules(ctx contex
 	}
 
 	for _, rule := range cnp.Spec.Egress {
+		// The temp NP embeds all of the rule's CIDR/Namespace/Pod peers, so a
+		// single Resolve() call covers the whole peer set. Skip Resolve for
+		// rules without such peers: an empty To list would be treated as
+		// "allow all" and emit spurious 0.0.0.0/0 + ::/0 endpoints.
+		if egressRuleHasResolvablePeer(rule) {
+			tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, subjectNamespace)
+			_, egressEndpoints, _, err := r.baseResolver.Resolve(ctx, tempNP)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, endpoint := range egressEndpoints {
+				endpointInfos = append(endpointInfos, policyinfo.ClusterEndpointInfo{
+					CIDR:   endpoint.CIDR,
+					Ports:  endpoint.Ports,
+					Action: rule.Action,
+				})
+			}
+		}
+
+		// DomainNames are not part of the upstream NetworkPolicy schema, so
+		// baseResolver.Resolve cannot handle them; emit them directly.
 		for _, peer := range rule.To {
-			// Handle each peer type exclusively
-			if len(peer.Networks) > 0 {
-				// CIDR peer - namespace is irrelevant for CIDR resolution
-				tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, subjectNamespace)
-				_, cidrEgressEndpoints, _, err := r.baseResolver.Resolve(ctx, tempNP)
-				if err != nil {
-					return nil, err
-				}
-
-				for _, endpoint := range cidrEgressEndpoints {
+			for _, domain := range peer.DomainNames {
+				if rule.Action == policyinfo.ClusterNetworkPolicyRuleActionAccept ||
+					rule.Action == policyinfo.ClusterNetworkPolicyRuleActionPass {
 					endpointInfos = append(endpointInfos, policyinfo.ClusterEndpointInfo{
-						CIDR:   endpoint.CIDR,
-						Ports:  endpoint.Ports,
-						Action: rule.Action,
+						DomainName: domain,
+						Action:     rule.Action,
+						Ports:      r.convertCNPPortsToEndpointPorts(rule.Ports),
 					})
 				}
-			} else if peer.Namespaces != nil || peer.Pods != nil {
-				tempNP := r.convertSingleCNPEgressRuleToNP(cnp, rule, subjectNamespace)
-				_, egressEndpoints, _, err := r.baseResolver.Resolve(ctx, tempNP)
-				if err != nil {
-					return nil, err
-				}
-
-				for _, endpoint := range egressEndpoints {
-					endpointInfos = append(endpointInfos, policyinfo.ClusterEndpointInfo{
-						CIDR:   endpoint.CIDR,
-						Ports:  endpoint.Ports,
-						Action: rule.Action,
-					})
-				}
-			} else if len(peer.DomainNames) > 0 {
-				// Domain name peer - handle directly
-				for _, domain := range peer.DomainNames {
-					if rule.Action == policyinfo.ClusterNetworkPolicyRuleActionAccept ||
-						rule.Action == policyinfo.ClusterNetworkPolicyRuleActionPass {
-						endpointInfos = append(endpointInfos, policyinfo.ClusterEndpointInfo{
-							DomainName: domain,
-							Action:     rule.Action,
-							Ports:      r.convertCNPPortsToEndpointPorts(rule.Ports),
-						})
-					}
-					// Ignore Deny action for domainNames as it's not supported
-				}
+				// Ignore Deny action for domainNames as it's not supported
 			}
 		}
 	}
 
 	return r.mergeClusterEndpointInfo(endpointInfos), nil
+}
+
+// egressRuleHasResolvablePeer reports whether an egress rule has at least one
+// peer that baseResolver.Resolve can handle (CIDR, Namespaces, or Pods).
+func egressRuleHasResolvablePeer(rule policyinfo.ClusterNetworkPolicyEgressRule) bool {
+	for _, peer := range rule.To {
+		if len(peer.Networks) > 0 || peer.Namespaces != nil || peer.Pods != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // convertSingleCNPIngressRuleToNP builds a temporary NetworkPolicy that wraps a

@@ -1233,6 +1233,84 @@ func TestResolveCNPEgressRules_SingleResolveCallForNamespacePeer(t *testing.T) {
 	mockResolver.AssertNumberOfCalls(t, "Resolve", 1)
 }
 
+// TestResolveCNPEgressRules_SingleResolveCallForMultiplePeers verifies that a
+// rule with multiple CIDR/Namespace/Pod peers issues exactly one Resolve()
+// call, and that DomainName peers are handled directly without one.
+func TestResolveCNPEgressRules_SingleResolveCallForMultiplePeers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networking.AddToScheme(scheme)
+	_ = policyinfo.AddToScheme(scheme)
+
+	subjectNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "subject-ns", Labels: map[string]string{"role": "subject"}},
+	}
+	prodNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod-ns", Labels: map[string]string{"env": "prod"}},
+	}
+	devNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-ns", Labels: map[string]string{"env": "dev"}},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(subjectNS, prodNS, devNS).
+		Build()
+
+	mockResolver := new(MockEndpointsResolver)
+	resolver := &clusterNetworkPolicyEndpointsResolver{
+		k8sClient:    fakeClient,
+		baseResolver: mockResolver,
+		logger:       logr.Discard(),
+	}
+
+	mockResolver.On("Resolve", mock.Anything, mock.Anything).Return(
+		[]policyinfo.EndpointInfo(nil),
+		[]policyinfo.EndpointInfo{{CIDR: "10.0.0.1"}},
+		[]policyinfo.PodEndpoint(nil),
+		nil,
+	)
+
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Subject: policyinfo.ClusterNetworkPolicySubject{
+				Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"role": "subject"}},
+			},
+			Egress: []policyinfo.ClusterNetworkPolicyEgressRule{
+				{
+					Name:   "multi-peer",
+					Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+					To: []policyinfo.ClusterNetworkPolicyEgressPeer{
+						{Networks: []policyinfo.CIDR{"10.0.0.0/8"}},
+						{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}}},
+						{Namespaces: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "dev"}}},
+						{DomainNames: []policyinfo.DomainName{"example.com"}},
+					},
+				},
+			},
+		},
+	}
+
+	endpoints, err := resolver.resolveCNPEgressRules(context.Background(), cnp)
+	assert.NoError(t, err)
+	// 4 peers (1 CIDR + 2 NS + 1 DomainName) in a single rule → exactly 1
+	// Resolve() call.
+	mockResolver.AssertNumberOfCalls(t, "Resolve", 1)
+
+	// The single Resolve() result and the directly handled DomainName peer
+	// must both survive into the merged output.
+	assert.Len(t, endpoints, 2)
+	assert.Contains(t, endpoints, policyinfo.ClusterEndpointInfo{
+		CIDR:   "10.0.0.1",
+		Action: policyinfo.ClusterNetworkPolicyRuleActionAccept,
+	})
+	assert.Contains(t, endpoints, policyinfo.ClusterEndpointInfo{
+		DomainName: "example.com",
+		Action:     policyinfo.ClusterNetworkPolicyRuleActionAccept,
+	})
+}
+
 // Covers getSubjectNamespace for Pods/Namespaces subject + no-match cases.
 func TestGetSubjectNamespace(t *testing.T) {
 	scheme := runtime.NewScheme()
