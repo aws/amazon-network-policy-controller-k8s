@@ -1,6 +1,6 @@
 module github.com/aws/amazon-network-policy-controller-k8s
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/go-logr/logr v1.4.3
