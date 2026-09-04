@@ -1,9 +1,6 @@
 package policyendpoints
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-
 	"github.com/samber/lo"
 	"golang.org/x/exp/maps"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -57,11 +54,12 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 	// Process existing CPEs (following the same logic as regular PE processing)
 	for i := range existingCPEs {
 		// Filter ingress rules - keep only those that exist in the new rules
+		// Keep the desired copy; a key match need not imply equality.
 		ingEndpointList := make([]policyinfo.ClusterEndpointInfo, 0, len(existingCPEs[i].Spec.Ingress))
 		for _, ingRule := range existingCPEs[i].Spec.Ingress {
 			ruleKey := m.getClusterEndpointInfoKey(ingRule)
-			if _, exists := ingressEndpointsMap[ruleKey]; exists {
-				ingEndpointList = append(ingEndpointList, ingRule)
+			if desired, exists := ingressEndpointsMap[ruleKey]; exists {
+				ingEndpointList = append(ingEndpointList, *desired.DeepCopy())
 				delete(ingressEndpointsMap, ruleKey)
 			}
 		}
@@ -70,8 +68,8 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 		egEndpointList := make([]policyinfo.ClusterEndpointInfo, 0, len(existingCPEs[i].Spec.Egress))
 		for _, egRule := range existingCPEs[i].Spec.Egress {
 			ruleKey := m.getClusterEndpointInfoKey(egRule)
-			if _, exists := egressEndpointsMap[ruleKey]; exists {
-				egEndpointList = append(egEndpointList, egRule)
+			if desired, exists := egressEndpointsMap[ruleKey]; exists {
+				egEndpointList = append(egEndpointList, *desired.DeepCopy())
 				delete(egressEndpointsMap, ruleKey)
 			}
 		}
@@ -102,11 +100,12 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 			existingCPEs[i].Spec.Egress = egEndpointList
 			existingCPEs[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
 			potentialDeletes = append(potentialDeletes, existingCPEs[i])
-		} else if len(existingCPEs[i].Spec.Ingress) != len(ingEndpointList) ||
-			len(existingCPEs[i].Spec.Egress) != len(egEndpointList) ||
-			len(existingCPEs[i].Spec.PodSelectorEndpoints) != len(podSelectorEndpointList) ||
+		} else if !equality.Semantic.DeepEqual(existingCPEs[i].Spec.Ingress, ingEndpointList) ||
+			!equality.Semantic.DeepEqual(existingCPEs[i].Spec.Egress, egEndpointList) ||
+			!equality.Semantic.DeepEqual(existingCPEs[i].Spec.PodSelectorEndpoints, podSelectorEndpointList) ||
 			tierChanged || priorityChanged || subjectChanged {
-			// CPE has changed - update it
+			// CPE has changed - update it. Content, not length: an in-place
+			// edit keeps the count.
 			existingCPEs[i].Spec.Ingress = ingEndpointList
 			existingCPEs[i].Spec.Egress = egEndpointList
 			existingCPEs[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
@@ -279,20 +278,10 @@ func (m *policyEndpointsManager) getClusterEndpointInfoFromHashes(hashes []strin
 
 // getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo
 func (m *policyEndpointsManager) getClusterEndpointInfoKey(info policyinfo.ClusterEndpointInfo) string {
-	hasher := sha256.New()
-	hasher.Write([]byte(string(info.CIDR)))
-	hasher.Write([]byte(string(info.DomainName)))
-	hasher.Write([]byte(string(info.Action)))
-	for _, port := range info.Ports {
-		if port.Protocol != nil {
-			hasher.Write([]byte(string(*port.Protocol)))
-		}
-		if port.Port != nil {
-			hasher.Write([]byte(string(rune(*port.Port))))
-		}
-		if port.EndPort != nil {
-			hasher.Write([]byte(string(rune(*port.EndPort))))
-		}
-	}
-	return hex.EncodeToString(hasher.Sum(nil))
+	w := newHashKeyWriter()
+	w.str("cidr", string(info.CIDR))
+	w.str("domain", string(info.DomainName))
+	w.str("action", string(info.Action))
+	w.ports(info.Ports)
+	return w.sum()
 }

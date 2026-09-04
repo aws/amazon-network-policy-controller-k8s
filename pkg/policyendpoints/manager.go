@@ -2,11 +2,7 @@ package policyendpoints
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"sort"
-	"strconv"
 	"time"
 
 	"golang.org/x/exp/maps"
@@ -332,26 +328,13 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 	return newPEs
 }
 
-// getCombineKey creates a combining key from CIDR or DomainName and sorted exceptions,
-// excluding ports so that entries with the same network identity get merged.
+// getCombineKey identifies a peer for port merging: every field except Ports.
 func getCombineKey(ep policyinfo.EndpointInfo) string {
-	var key string
-	if ep.DomainName != "" {
-		key = "fqdn|" + string(ep.DomainName) + "|"
-	} else {
-		key = "cidr|" + string(ep.CIDR) + "|"
-	}
-
-	sortedExcepts := make([]policyinfo.NetworkAddress, len(ep.Except))
-	copy(sortedExcepts, ep.Except)
-	sort.Slice(sortedExcepts, func(i, j int) bool {
-		return string(sortedExcepts[i]) < string(sortedExcepts[j])
-	})
-	for _, except := range sortedExcepts {
-		key += string(except) + "|"
-	}
-
-	return key
+	w := newHashKeyWriter()
+	w.str("cidr", string(ep.CIDR))
+	w.strs("except", ep.Except)
+	w.str("domain", string(ep.DomainName))
+	return w.sum()
 }
 
 func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {
@@ -432,34 +415,15 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 	return ruleList
 }
 
-// TODO: this can return different hash for semantically same endpointinfo as port slice order can generate separate hash.
-// Check how its tied in bin packing algo and fix if needed
+// getEndpointInfoKey hashes every field: branching on DomainName would leave
+// CIDR and Except out of the key.
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
-	hasher := sha256.New()
-
-	// Handle FQDN case for ApplicationNetworkPolicy
-	if info.DomainName != "" {
-		hasher.Write([]byte(info.DomainName))
-	} else {
-		// Handle CIDR case for NetworkPolicy
-		hasher.Write([]byte(info.CIDR))
-		for _, except := range info.Except {
-			hasher.Write([]byte(except))
-		}
-	}
-
-	for _, port := range info.Ports {
-		if port.Protocol != nil {
-			hasher.Write([]byte(*port.Protocol))
-		}
-		if port.Port != nil {
-			hasher.Write([]byte(strconv.Itoa(int(*port.Port))))
-		}
-		if port.EndPort != nil {
-			hasher.Write([]byte(strconv.Itoa(int(*port.EndPort))))
-		}
-	}
-	return hex.EncodeToString(hasher.Sum(nil))
+	w := newHashKeyWriter()
+	w.str("cidr", string(info.CIDR))
+	w.strs("except", info.Except)
+	w.str("domain", string(info.DomainName))
+	w.ports(info.Ports)
+	return w.sum()
 }
 
 // processExistingPolicyEndpoints processes the existing policies with the incoming policy changes
@@ -497,19 +461,20 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	// in modified and potential delete candidate lists. We only create new PolicyEndpoint resources if we exhaust all the existing resources.
 	// Any PolicyEndpoint resources placed in potentialDelete bucket that aren't utilized at the end of the binpacking flow will be permanently deleted.
 	for i := range existingPolicyEndpoints {
+		// Keep the desired copy; a key match need not imply equality.
 		ingEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Ingress))
 		for _, ingRule := range existingPolicyEndpoints[i].Spec.Ingress {
 			ruleKey := m.getEndpointInfoKey(ingRule)
-			if _, exists := ingressEndpointsMap[ruleKey]; exists {
-				ingEndpointList = append(ingEndpointList, ingRule)
+			if desired, exists := ingressEndpointsMap[ruleKey]; exists {
+				ingEndpointList = append(ingEndpointList, *desired.DeepCopy())
 				delete(ingressEndpointsMap, ruleKey)
 			}
 		}
 		egEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Egress))
 		for _, egRule := range existingPolicyEndpoints[i].Spec.Egress {
 			ruleKey := m.getEndpointInfoKey(egRule)
-			if _, exists := egressEndpointsMap[ruleKey]; exists {
-				egEndpointList = append(egEndpointList, egRule)
+			if desired, exists := egressEndpointsMap[ruleKey]; exists {
+				egEndpointList = append(egEndpointList, *desired.DeepCopy())
 				delete(egressEndpointsMap, ruleKey)
 			}
 		}
@@ -531,8 +496,11 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 			existingPolicyEndpoints[i].Spec.Egress = egEndpointList
 			existingPolicyEndpoints[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
 			potentialDeletes = append(potentialDeletes, existingPolicyEndpoints[i])
-		} else if len(existingPolicyEndpoints[i].Spec.Ingress) != len(ingEndpointList) || len(existingPolicyEndpoints[i].Spec.Egress) != len(egEndpointList) ||
-			len(existingPolicyEndpoints[i].Spec.PodSelectorEndpoints) != len(podSelectorEndpointList) || policyEndpointChanged {
+		} else if !equality.Semantic.DeepEqual(existingPolicyEndpoints[i].Spec.Ingress, ingEndpointList) ||
+			!equality.Semantic.DeepEqual(existingPolicyEndpoints[i].Spec.Egress, egEndpointList) ||
+			!equality.Semantic.DeepEqual(existingPolicyEndpoints[i].Spec.PodSelectorEndpoints, podSelectorEndpointList) ||
+			policyEndpointChanged {
+			// Content, not length: an in-place edit keeps the count.
 			existingPolicyEndpoints[i].Spec.Ingress = ingEndpointList
 			existingPolicyEndpoints[i].Spec.Egress = egEndpointList
 			existingPolicyEndpoints[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
