@@ -3,6 +3,7 @@ package policyendpoints
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/samber/lo"
 	"golang.org/x/exp/maps"
@@ -60,7 +61,10 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 		ingEndpointList := make([]policyinfo.ClusterEndpointInfo, 0, len(existingCPEs[i].Spec.Ingress))
 		for _, ingRule := range existingCPEs[i].Spec.Ingress {
 			ruleKey := m.getClusterEndpointInfoKey(ingRule)
-			if _, exists := ingressEndpointsMap[ruleKey]; exists {
+			// Digest selects a candidate; DeepEqual decides equality so a stale
+			// stored rule is dropped even if it ever shares a digest with a
+			// different desired rule.
+			if desired, exists := ingressEndpointsMap[ruleKey]; exists && equality.Semantic.DeepEqual(desired, ingRule) {
 				ingEndpointList = append(ingEndpointList, ingRule)
 				delete(ingressEndpointsMap, ruleKey)
 			}
@@ -70,7 +74,7 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 		egEndpointList := make([]policyinfo.ClusterEndpointInfo, 0, len(existingCPEs[i].Spec.Egress))
 		for _, egRule := range existingCPEs[i].Spec.Egress {
 			ruleKey := m.getClusterEndpointInfoKey(egRule)
-			if _, exists := egressEndpointsMap[ruleKey]; exists {
+			if desired, exists := egressEndpointsMap[ruleKey]; exists && equality.Semantic.DeepEqual(desired, egRule) {
 				egEndpointList = append(egEndpointList, egRule)
 				delete(egressEndpointsMap, ruleKey)
 			}
@@ -277,22 +281,20 @@ func (m *policyEndpointsManager) getClusterEndpointInfoFromHashes(hashes []strin
 	return ruleList
 }
 
-// getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo
+// getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo.
+// Every field is written delimited and self-describing. The previous encoding
+// concatenated fields with no separator AND rendered ports with
+// string(rune(port)) (the Unicode code point, not the decimal text), so
+// different rules could collide silently. "field=value|" framing with decimal
+// ports removes both problems.
 func (m *policyEndpointsManager) getClusterEndpointInfoKey(info policyinfo.ClusterEndpointInfo) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(string(info.CIDR)))
-	hasher.Write([]byte(string(info.DomainName)))
-	hasher.Write([]byte(string(info.Action)))
+	fmt.Fprintf(hasher, "cidr=%s|domainName=%s|action=%s|", info.CIDR, info.DomainName, info.Action)
 	for _, port := range info.Ports {
-		if port.Protocol != nil {
-			hasher.Write([]byte(string(*port.Protocol)))
-		}
-		if port.Port != nil {
-			hasher.Write([]byte(string(rune(*port.Port))))
-		}
-		if port.EndPort != nil {
-			hasher.Write([]byte(string(rune(*port.EndPort))))
-		}
+		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
+			protocolKeyPart(port.Protocol),
+			int32PtrKeyPart(port.Port),
+			int32PtrKeyPart(port.EndPort))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }
