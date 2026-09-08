@@ -9,8 +9,8 @@ import (
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 )
 
-// Regression tests for V2339293193: a separator-free rule-identity hash let
-// the controller treat two semantically different rules as one. Narrowing a
+// Regression tests for a rule-identity hash collision: a separator-free hash
+// let the controller treat two semantically different rules as one. Narrowing a
 // NetworkPolicy from the port range 1-23 to the single port 123 produced the
 // same digest, so the controller kept the revoked range and dropped the newly
 // declared port.
