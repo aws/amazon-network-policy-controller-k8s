@@ -33,6 +33,11 @@ const (
 	// compute E2E policy programming latency (same pattern as kube-proxy's
 	// endpoints.kubernetes.io/last-change-trigger-time on EndpointSlice).
 	LastChangeTriggerTimeAnnotation = "networking.k8s.aws/last-change-trigger-time"
+
+	// delimiter separates fields when hashing an endpoint into a key so that
+	// adjacent values can't alias (e.g. port 1 + endPort 23 vs port 12 + endPort 3).
+	// '@' is safe: it cannot appear in a CIDR, FQDN, action, protocol, or port.
+	delimiter = "@"
 )
 
 // setLastChangeTriggerTime sets the E2E latency annotation on a PolicyEndpoint.
@@ -440,11 +445,14 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 	// Handle FQDN case for ApplicationNetworkPolicy
 	if info.DomainName != "" {
 		hasher.Write([]byte(info.DomainName))
+		hasher.Write([]byte(delimiter))
 	} else {
 		// Handle CIDR case for NetworkPolicy
 		hasher.Write([]byte(info.CIDR))
+		hasher.Write([]byte(delimiter))
 		for _, except := range info.Except {
 			hasher.Write([]byte(except))
+			hasher.Write([]byte(delimiter))
 		}
 	}
 
@@ -452,12 +460,15 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 		if port.Protocol != nil {
 			hasher.Write([]byte(*port.Protocol))
 		}
+		hasher.Write([]byte(delimiter))
 		if port.Port != nil {
 			hasher.Write([]byte(strconv.Itoa(int(*port.Port))))
 		}
+		hasher.Write([]byte(delimiter))
 		if port.EndPort != nil {
 			hasher.Write([]byte(strconv.Itoa(int(*port.EndPort))))
 		}
+		hasher.Write([]byte(delimiter))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }

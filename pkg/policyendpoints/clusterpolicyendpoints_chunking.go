@@ -3,6 +3,7 @@ package policyendpoints
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 
 	"github.com/samber/lo"
 	"golang.org/x/exp/maps"
@@ -277,22 +278,28 @@ func (m *policyEndpointsManager) getClusterEndpointInfoFromHashes(hashes []strin
 	return ruleList
 }
 
-// getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo
+// getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo.
 func (m *policyEndpointsManager) getClusterEndpointInfoKey(info policyinfo.ClusterEndpointInfo) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(string(info.CIDR)))
-	hasher.Write([]byte(string(info.DomainName)))
-	hasher.Write([]byte(string(info.Action)))
+	hasher.Write([]byte(info.CIDR))
+	hasher.Write([]byte(delimiter))
+	hasher.Write([]byte(info.DomainName))
+	hasher.Write([]byte(delimiter))
+	hasher.Write([]byte(info.Action))
+	hasher.Write([]byte(delimiter))
 	for _, port := range info.Ports {
 		if port.Protocol != nil {
-			hasher.Write([]byte(string(*port.Protocol)))
+			hasher.Write([]byte((*port.Protocol)))
 		}
+		hasher.Write([]byte(delimiter))
 		if port.Port != nil {
-			hasher.Write([]byte(string(rune(*port.Port))))
+			hasher.Write([]byte(strconv.Itoa(int(*port.Port))))
 		}
+		hasher.Write([]byte(delimiter))
 		if port.EndPort != nil {
-			hasher.Write([]byte(string(rune(*port.EndPort))))
+			hasher.Write([]byte(strconv.Itoa(int(*port.EndPort))))
 		}
+		hasher.Write([]byte(delimiter))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }

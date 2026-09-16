@@ -1262,6 +1262,59 @@ func Test_getEndpointInfoKey(t *testing.T) {
 	assert.NotEqual(t, fqdnKey, cidrKey)
 }
 
+// Test_getEndpointInfoKey_portCollisions is the namespaced counterpart to
+// Test_policyEndpointsManager_getClusterEndpointInfoKey_portCollisions: it guards
+// the same surrogate-band and delimiter regressions, plus CIDR/except boundaries.
+func Test_getEndpointInfoKey_portCollisions(t *testing.T) {
+	m := &policyEndpointsManager{}
+
+	rule := func(ports ...policyinfo.Port) policyinfo.EndpointInfo {
+		return policyinfo.EndpointInfo{CIDR: "10.0.0.0/8", Ports: ports}
+	}
+	single := func(port int32) policyinfo.Port {
+		p := port
+		return policyinfo.Port{Port: &p}
+	}
+	portRange := func(start, end int32) policyinfo.Port {
+		s, e := start, end
+		return policyinfo.Port{Port: &s, EndPort: &e}
+	}
+
+	// Every port across the surrogate band must hash to a distinct key.
+	surrogateBand := []int32{55296, 55555, 56666, 57000, 57343}
+	keys := make(map[string]int32, len(surrogateBand))
+	for _, p := range surrogateBand {
+		k := m.getEndpointInfoKey(rule(single(p)))
+		if prev, dup := keys[k]; dup {
+			t.Fatalf("surrogate-band ports %d and %d hashed to the same key", prev, p)
+		}
+		keys[k] = p
+	}
+
+	// Delimiter: a port range must not alias two discrete ports.
+	assert.NotEqual(t,
+		m.getEndpointInfoKey(rule(portRange(1, 23))),
+		m.getEndpointInfoKey(rule(single(1), single(23))),
+		"range 1-23 must not hash the same as discrete ports 1 and 23")
+
+	// Delimiter: adjacent-digit boundaries must not alias.
+	assert.NotEqual(t,
+		m.getEndpointInfoKey(rule(portRange(1, 23))),
+		m.getEndpointInfoKey(rule(portRange(12, 3))),
+		"range 1-23 must not hash the same as range 12-3")
+
+	// Delimiter: CIDR and except boundaries must be unambiguous.
+	assert.NotEqual(t,
+		m.getEndpointInfoKey(policyinfo.EndpointInfo{CIDR: "10.0.0.0/8", Except: []policyinfo.NetworkAddress{"10.1.0.0/16", "10.2.0.0/16"}}),
+		m.getEndpointInfoKey(policyinfo.EndpointInfo{CIDR: "10.0.0.0/810.1.0.0/16", Except: []policyinfo.NetworkAddress{"10.2.0.0/16"}}),
+		"CIDR/except boundaries must not alias")
+
+	// Sanity: identical rules still produce the same key.
+	assert.Equal(t,
+		m.getEndpointInfoKey(rule(single(80))),
+		m.getEndpointInfoKey(rule(single(80))))
+}
+
 func TestPolicyEndpointsManager_ReconcileCNP(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
