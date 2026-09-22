@@ -518,12 +518,7 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 		ingEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Ingress))
 		for _, ingRule := range existingPolicyEndpoints[i].Spec.Ingress {
 			ruleKey := m.getEndpointInfoKey(ingRule)
-			// The digest only selects a candidate. A hit is treated as "keep the
-			// stored rule" only when the stored and desired rules are actually
-			// equal; otherwise the stored rule is stale and is left out so the
-			// desired rule (still in the map) gets written. This makes the result
-			// correct even if two different rules ever share a digest.
-			if desired, exists := ingressEndpointsMap[ruleKey]; exists && equality.Semantic.DeepEqual(desired, ingRule) {
+			if _, exists := ingressEndpointsMap[ruleKey]; exists {
 				ingEndpointList = append(ingEndpointList, ingRule)
 				delete(ingressEndpointsMap, ruleKey)
 			}
@@ -531,7 +526,7 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 		egEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Egress))
 		for _, egRule := range existingPolicyEndpoints[i].Spec.Egress {
 			ruleKey := m.getEndpointInfoKey(egRule)
-			if desired, exists := egressEndpointsMap[ruleKey]; exists && equality.Semantic.DeepEqual(desired, egRule) {
+			if _, exists := egressEndpointsMap[ruleKey]; exists {
 				egEndpointList = append(egEndpointList, egRule)
 				delete(egressEndpointsMap, ruleKey)
 			}

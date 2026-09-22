@@ -61,10 +61,7 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 		ingEndpointList := make([]policyinfo.ClusterEndpointInfo, 0, len(existingCPEs[i].Spec.Ingress))
 		for _, ingRule := range existingCPEs[i].Spec.Ingress {
 			ruleKey := m.getClusterEndpointInfoKey(ingRule)
-			// Digest selects a candidate; DeepEqual decides equality so a stale
-			// stored rule is dropped even if it ever shares a digest with a
-			// different desired rule.
-			if desired, exists := ingressEndpointsMap[ruleKey]; exists && equality.Semantic.DeepEqual(desired, ingRule) {
+			if _, exists := ingressEndpointsMap[ruleKey]; exists {
 				ingEndpointList = append(ingEndpointList, ingRule)
 				delete(ingressEndpointsMap, ruleKey)
 			}
@@ -74,7 +71,7 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 		egEndpointList := make([]policyinfo.ClusterEndpointInfo, 0, len(existingCPEs[i].Spec.Egress))
 		for _, egRule := range existingCPEs[i].Spec.Egress {
 			ruleKey := m.getClusterEndpointInfoKey(egRule)
-			if desired, exists := egressEndpointsMap[ruleKey]; exists && equality.Semantic.DeepEqual(desired, egRule) {
+			if _, exists := egressEndpointsMap[ruleKey]; exists {
 				egEndpointList = append(egEndpointList, egRule)
 				delete(egressEndpointsMap, ruleKey)
 			}
