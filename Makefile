@@ -219,4 +219,3 @@ deploy-controller-on-dataplane: ## Deploys the Network Policy controller on an e
 deploy-and-test: ## Deploys the Network Policy controller on an existing cluster and runs cyclonus tests. Call with CLUSTER_NAME=<name of the cluster> and NP_CONTROLLER_IMAGE=<Image URI> 
 	$(MAKE) deploy-controller-on-dataplane NP_CONTROLLER_IMAGE=$(NP_CONTROLLER_IMAGE)
 	$(MAKE) run-cyclonus-test CLUSTER_NAME=$(CLUSTER_NAME)
-
