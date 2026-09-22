@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -437,29 +438,46 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
 	hasher := sha256.New()
 
+	// Every field is written delimited and self-describing so that no two
+	// semantically different endpoints can produce the same byte stream. A bare
+	// concatenation (e.g. port "1" followed by endPort "23") is ambiguous with a
+	// single port "123"; the "field=value|" framing removes that ambiguity.
 	// Handle FQDN case for ApplicationNetworkPolicy
 	if info.DomainName != "" {
-		hasher.Write([]byte(info.DomainName))
+		fmt.Fprintf(hasher, "domainName=%s|", info.DomainName)
 	} else {
 		// Handle CIDR case for NetworkPolicy
-		hasher.Write([]byte(info.CIDR))
+		fmt.Fprintf(hasher, "cidr=%s|", info.CIDR)
 		for _, except := range info.Except {
-			hasher.Write([]byte(except))
+			fmt.Fprintf(hasher, "except=%s|", except)
 		}
 	}
 
 	for _, port := range info.Ports {
-		if port.Protocol != nil {
-			hasher.Write([]byte(*port.Protocol))
-		}
-		if port.Port != nil {
-			hasher.Write([]byte(strconv.Itoa(int(*port.Port))))
-		}
-		if port.EndPort != nil {
-			hasher.Write([]byte(strconv.Itoa(int(*port.EndPort))))
-		}
+		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
+			protocolKeyPart(port.Protocol),
+			int32PtrKeyPart(port.Port),
+			int32PtrKeyPart(port.EndPort))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// protocolKeyPart renders a protocol pointer for hashing, using "nil" for an
+// absent value so a missing protocol is distinguishable from any real one.
+func protocolKeyPart(p *corev1.Protocol) string {
+	if p == nil {
+		return "nil"
+	}
+	return string(*p)
+}
+
+// int32PtrKeyPart renders an int32 pointer for hashing, using "nil" for an
+// absent value so a missing port is distinguishable from port 0.
+func int32PtrKeyPart(p *int32) string {
+	if p == nil {
+		return "nil"
+	}
+	return strconv.Itoa(int(*p))
 }
 
 // processExistingPolicyEndpoints processes the existing policies with the incoming policy changes

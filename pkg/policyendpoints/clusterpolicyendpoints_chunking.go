@@ -3,6 +3,7 @@ package policyendpoints
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/samber/lo"
 	"golang.org/x/exp/maps"
@@ -277,22 +278,20 @@ func (m *policyEndpointsManager) getClusterEndpointInfoFromHashes(hashes []strin
 	return ruleList
 }
 
-// getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo
+// getClusterEndpointInfoKey generates a hash key for ClusterEndpointInfo.
+// Every field is written delimited and self-describing. The previous encoding
+// concatenated fields with no separator AND rendered ports with
+// string(rune(port)) (the Unicode code point, not the decimal text), so
+// different rules could collide silently. "field=value|" framing with decimal
+// ports removes both problems.
 func (m *policyEndpointsManager) getClusterEndpointInfoKey(info policyinfo.ClusterEndpointInfo) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(string(info.CIDR)))
-	hasher.Write([]byte(string(info.DomainName)))
-	hasher.Write([]byte(string(info.Action)))
+	fmt.Fprintf(hasher, "cidr=%s|domainName=%s|action=%s|", info.CIDR, info.DomainName, info.Action)
 	for _, port := range info.Ports {
-		if port.Protocol != nil {
-			hasher.Write([]byte(string(*port.Protocol)))
-		}
-		if port.Port != nil {
-			hasher.Write([]byte(string(rune(*port.Port))))
-		}
-		if port.EndPort != nil {
-			hasher.Write([]byte(string(rune(*port.EndPort))))
-		}
+		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
+			protocolKeyPart(port.Protocol),
+			int32PtrKeyPart(port.Port),
+			int32PtrKeyPart(port.EndPort))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }
