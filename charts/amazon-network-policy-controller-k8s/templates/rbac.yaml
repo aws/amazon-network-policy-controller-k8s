@@ -125,6 +125,47 @@ rules:
   - patch
   - update
 - apiGroups:
+  - networking.k8s.aws
+  resources:
+  - clusterpolicyendpoints
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.aws
+  resources:
+  - clusterpolicyendpoints/finalizers
+  - clusternetworkpolicies/finalizers
+  - applicationnetworkpolicies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - networking.k8s.aws
+  resources:
+  - clusterpolicyendpoints/status
+  - clusternetworkpolicies/status
+  - applicationnetworkpolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.aws
+  resources:
+  - clusternetworkpolicies
+  - applicationnetworkpolicies
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - networking.k8s.io
   resources:
   - networkpolicies

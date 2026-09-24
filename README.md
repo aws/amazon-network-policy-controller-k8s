@@ -57,6 +57,13 @@ kubectl get deployment amazon-network-policy-controller-k8s -n kube-system | gre
 kubectl get deployment amazon-network-policy-controller-k8s -n kube-system
 kubectl logs deployment/amazon-network-policy-controller-k8s -n kube-system
 ```
+## Considerations
+
+### NetworkPolicy `podSelector` must match the target Service's selector
+
+When a pod reaches another pod through its Service ClusterIP, the network policy controller resolves the traffic through the Service IP (pre-DNAT). To allow this traffic with a NetworkPolicy, the `podSelector` in the policy must select pods using the **same labels the Service uses in its `spec.selector`**.
+
+Pods often carry several labels, and a Service may select them by only one of those labels. If a NetworkPolicy targets the pod using a *different* label than the one the Service selects on, traffic sent to the ClusterIP is not matched and is denied, even though the label technically matches the destination pod. Traffic sent directly to the pod IP is unaffected. See [issue #224](https://github.com/aws/amazon-network-policy-controller-k8s/issues/224) for background.
 
 ## Security Disclosures 
 
