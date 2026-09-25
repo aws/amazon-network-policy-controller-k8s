@@ -113,6 +113,12 @@ func podCacheFieldSelector() fields.Selector {
 	)
 }
 
+// serviceCacheFieldSelector drops headless Services from the informer cache.
+// Consumers already skip ClusterIPNone, so listing them is wasted work.
+func serviceCacheFieldSelector() fields.Selector {
+	return fields.OneTermNotEqualSelector("spec.clusterIP", corev1.ClusterIPNone)
+}
+
 // BuildCacheOptions returns a cache.Options struct for this controller.
 func BuildCacheOptions() cache.Options {
 	cacheOptions := cache.Options{
@@ -124,6 +130,7 @@ func BuildCacheOptions() cache.Options {
 			},
 			&corev1.Service{}: {
 				Transform: k8s.StripDownServiceTransformFunc,
+				Field:     serviceCacheFieldSelector(),
 			},
 			&corev1.Namespace{}:                  {},
 			&networkingv1.NetworkPolicy{}:        {},
