@@ -52,6 +52,12 @@ type enqueueRequestForPodEvent struct {
 }
 
 func (h *enqueueRequestForPodEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	// Every policy gets its own initial-list Create event and is reconciled against the synced cache, so
+	// fanning out from the initial list only duplicates that work, and the resolver cost is O(objects x policies).
+	// Relists after the informer has synced are not flagged, so changes missed during a watch gap still go through.
+	if event.IsInInitialList {
+		return
+	}
 	podNew := event.Object.(*corev1.Pod)
 	h.logger.V(1).Info("Handling pod create event", "pod", k8s.NamespacedName(podNew))
 	h.enqueueReferredPolicies(ctx, q, podNew, nil)
