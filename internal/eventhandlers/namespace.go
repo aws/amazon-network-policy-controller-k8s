@@ -37,6 +37,12 @@ type enqueueRequestForNamespaceEvent struct {
 }
 
 func (h *enqueueRequestForNamespaceEvent) Create(ctx context.Context, event event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+	// Every policy gets its own initial-list Create event and is reconciled against the synced cache, so
+	// fanning out from the initial list only duplicates that work, and the resolver cost is O(objects x policies).
+	// Relists after the informer has synced are not flagged, so changes missed during a watch gap still go through.
+	if event.IsInInitialList {
+		return
+	}
 	ns := event.Object.(*corev1.Namespace)
 	h.logger.V(1).Info("Handling create event", "namespace", k8s.NamespacedName(ns))
 	h.enqueueReferredPolicies(ctx, q, ns, nil)
