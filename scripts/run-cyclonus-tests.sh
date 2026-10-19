@@ -8,6 +8,10 @@
 # IP_FAMILY: defaults to IPv4
 # ADDON_VERSION: Optional, defaults to the latest version
 # ENDPOINT: Optional
+# SKIP_CNI_INSTALLATION: Optional, defaults to false. Skips installing the aws-vpc-cni helm chart with network policy enabled
+# DISABLE_CP_NETWORK_POLICY_CONTROLLER: Optional, defaults to false. Set to true when the controller under test runs on
+#   the dataplane (deploy-controller-on-dataplane.sh); the run then fails unless the dataplane controller is the leader
+# TEST_IMAGE_REGISTRY: Optional, registry mirroring the cyclonus and agnhost images, defaults to the upstream images
 
 set -euoE pipefail
 DIR=$(cd "$(dirname "$0")"; pwd)
@@ -23,6 +27,9 @@ source ${DIR}/lib/tests.sh
 : "${SKIP_CNI_INSTALLATION:="false"}"
 : "${K8S_VERSION:=""}"
 : "${DISABLE_CP_NETWORK_POLICY_CONTROLLER="false"}"
+: "${TEST_IMAGE_REGISTRY:=""}"
+: "${KUBECONFIG:="$HOME/.kube/config"}"
+export KUBECONFIG
 
 if [[ ! -z $ENDPOINT ]]; then
     ENDPOINT_FLAG="--endpoint-url $ENDPOINT"
@@ -54,14 +61,20 @@ fi
 if [[ $DISABLE_CP_NETWORK_POLICY_CONTROLLER == "true" ]]; then
     echo "Disable CP Network Policy Controller on controller plane"
     disable_cp_network_policy_controller
+    verify_dataplane_controller_is_leader
 else
     echo "Skip disabling CP Network Policy controller. Tests will be evaulated against control plane NP controller"
+
+    # Temporarily add CRD permissions to the ClusterRole
+    kubectl patch clusterrole eks:network-policy-controller --type=json --patch '[{"op": "add", "path": "/rules/-", "value": {"apiGroups": ["apiextensions.k8s.io"], "resources": ["customresourcedefinitions"], "verbs": ["create", "get", "list", "watch"]}}]'
 fi
 
-# Temporarily add CRD permissions to the ClusterRole
-kubectl patch clusterrole eks:network-policy-controller --type=json --patch '[{"op": "add", "path": "/rules/-", "value": {"apiGroups": ["apiextensions.k8s.io"], "resources": ["customresourcedefinitions"], "verbs": ["create", "get", "list", "watch"]}}]'
-
 run_cyclonus_tests
+
+# Leadership could have moved back to the control plane during the run, e.g. if the configmap was reconciled
+if [[ $DISABLE_CP_NETWORK_POLICY_CONTROLLER == "true" ]]; then
+    verify_dataplane_controller_is_leader || TEST_FAILED=true
+fi
 
 if [[ $TEST_FAILED == "true" ]]; then
     echo "Test run failed, check failures"
