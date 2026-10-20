@@ -38,3 +38,6 @@ kubectl rollout restart deployment.v1.apps/amazon-network-policy-controller-k8s 
 
 echo "Ensuring Controller is Running on Dataplane"
 kubectl rollout status deployment.v1.apps/amazon-network-policy-controller-k8s -n kube-system --timeout=2m || (echo "Amazon Network Policy controller is unhealthy" && exit 1)
+
+echo "Ensuring the dataplane Controller is the leader"
+verify_dataplane_controller_is_leader

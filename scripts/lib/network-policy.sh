@@ -100,10 +100,10 @@ function install_network_policy_helm(){
         --set enableNetworkPolicy=true \
         --set originalMatchLabels=true \
         --set init.env.ENABLE_IPv6=$ENABLE_IPv6 \
-        --set image.env.ENABLE_IPv6=$ENABLE_IPv6 \
+        --set env.ENABLE_IPv6=$ENABLE_IPv6 \
         --set nodeAgent.enableIpv6=$ENABLE_IPv6 \
-        --set image.env.ENABLE_PREFIX_DELEGATION=$ENABLE_PREFIX_DELEGATION \
-        --set image.env.ENABLE_IPv4=$ENABLE_IPv4
+        --set env.ENABLE_PREFIX_DELEGATION=$ENABLE_PREFIX_DELEGATION \
+        --set env.ENABLE_IPv4=$ENABLE_IPv4
 }
 
 function disable_cp_network_policy_controller() {
@@ -113,4 +113,39 @@ function disable_cp_network_policy_controller() {
     kubectl patch configmap/amazon-vpc-cni -n kube-system --type merge -p '{"data":{"enable-network-policy-controller":"false"}}'
   fi
 
+}
+
+# verify_dataplane_controller_is_leader fails unless the dataplane controller holds the leader
+# lease and the control plane controller is still disabled. Without this a run can pass against
+# the control plane controller instead of the image under test.
+#
+# controller-runtime sets holderIdentity to <hostname>_<uuid>, and a pod's hostname is its name,
+# so the holder must match one of the dataplane controller pods. The read is retried because the
+# control plane controller does not release the lease on shutdown, so it can take up to the lease
+# duration (15s) after it is disabled before the dataplane controller acquires it.
+function verify_dataplane_controller_is_leader() {
+    local name="amazon-network-policy-controller-k8s"
+    local enabled holder pods
+
+    enabled=$(kubectl get configmap amazon-vpc-cni -n kube-system \
+        -o jsonpath='{.data.enable-network-policy-controller}' 2>/dev/null) || true
+    if [[ $enabled == "true" ]]; then
+        echo "Control plane network policy controller is enabled in configmap amazon-vpc-cni"
+        return 1
+    fi
+
+    for _ in $(seq 1 36); do
+        holder=$(kubectl get lease "$name" -n kube-system -o jsonpath='{.spec.holderIdentity}' 2>/dev/null) || true
+        pods=$(kubectl get pods -n kube-system -l "app.kubernetes.io/name=$name" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null) || true
+        if [[ -n $holder ]] && grep -qxF -- "${holder%%_*}" <<<"$pods"; then
+            echo "Dataplane controller pod ${holder%%_*} holds the leader lease"
+            return 0
+        fi
+        sleep 5
+    done
+
+    echo "Leader lease kube-system/$name is held by '${holder}', not a dataplane controller pod:"
+    echo "$pods"
+    return 1
 }

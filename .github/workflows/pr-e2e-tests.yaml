@@ -1,0 +1,284 @@
+name: PR e2e Tests
+
+on:
+  issue_comment:
+    types: [created]
+
+# Each job gets only the token scopes it needs. build-image and e2e run the PR's Makefile and
+# scripts, so they get no write scopes, and their checkouts do not persist the token in .git/config.
+# Result comments are posted by the report job, which runs no PR code.
+permissions: {}
+
+# No concurrency group: every issue_comment starts a run, and GitHub keeps only one pending run per
+# group, so any unrelated comment would cancel a queued /test e2e. Cluster names include the run ID
+# instead, which keeps overlapping runs from colliding and is stable across re-runs of cleanup.
+
+env:
+  REGION: us-west-2
+  # amd64; the image is built for linux/amd64 only (see build-image).
+  INSTANCE_TYPE: t3.large
+  ECR_REPO_NAME: amazon/amazon-network-policy-controller-k8s
+
+jobs:
+  check-trigger:
+    permissions:
+      issues: write
+      pull-requests: read
+    if: |
+      github.repository == 'aws/amazon-network-policy-controller-k8s' &&
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/test e2e ')
+    runs-on: ubuntu-latest
+    outputs:
+      pr-sha: ${{ steps.validate-sha.outputs.sha }}
+    steps:
+      - name: Validate SHA from comment
+        id: validate-sha
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: permData } = await github.rest.repos.getCollaboratorPermissionLevel({
+              ...context.repo,
+              username: context.actor
+            });
+            if (!['admin', 'write'].includes(permData.permission)) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: `❌ @${context.actor} does not have write permission on this repository.`
+              });
+              core.setFailed('Insufficient permissions');
+              return;
+            }
+
+            const comment = context.payload.comment.body.trim();
+            const shaMatch = comment.match(/^\/test e2e ([a-f0-9]{40})$/);
+            if (!shaMatch) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: '❌ Invalid format. Use: `/test e2e <full-40-char-sha>`'
+              });
+              core.setFailed('Invalid SHA format');
+              return;
+            }
+
+            const requestedSHA = shaMatch[1];
+            const pr = (await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number
+            })).data;
+            if (pr.head.sha !== requestedSHA) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: `❌ SHA mismatch!\n- Provided: \`${requestedSHA}\`\n- Current PR head: \`${pr.head.sha}\`\n\nPlease verify the PR has not been updated since review.`
+              });
+              core.setFailed('SHA mismatch - possible TOCTOU');
+              return;
+            }
+
+            core.setOutput('sha', requestedSHA);
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `✅ e2e tests (cyclonus IPv4 + IPv6) triggered by @${context.actor} for \`${requestedSHA}\`. [View run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+            });
+
+  build-image:
+    needs: check-trigger
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      image-repository: ${{ steps.build.outputs.image_repository }}
+      image-tag: ${{ steps.build.outputs.image_tag }}
+      k8s-version: ${{ steps.k8s-version.outputs.k8s-version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-trigger.outputs.pr-sha }}
+          # git describe in image-push needs tags.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: "**/go.sum"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      # Picked once here so both legs, and the report job, use the same version.
+      - name: Pick Kubernetes version
+        id: k8s-version
+        run: |
+          K8S_VERSION=$(aws eks describe-addon-versions --addon-name vpc-cni --region "$REGION" \
+            | jq -r '[.addons[0].addonVersions[0].compatibilities[].clusterVersion] | sort_by(split(".")[1] | tonumber) | .[-2]')
+          [[ -n $K8S_VERSION && $K8S_VERSION != null ]]
+          echo "k8s-version=$K8S_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        id: build
+        run: |
+          IMAGE_TAG=$(git rev-parse HEAD)
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE_REPOSITORY="$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_REPO_NAME"
+
+          # The repo is created once by hand (see scripts/README.md), so the role does not need
+          # ecr:CreateRepository. Always build: a ko build takes minutes against a multi-hour run,
+          # and skipping on an "image exists" check fails open when that check errors, surfacing as
+          # ImagePullBackOff after the cluster is up. The repo is mutable, so re-pushing a tag is fine.
+          make ko
+          aws ecr get-login-password --region "$REGION" | \
+            ./bin/ko login "$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com" -u AWS --password-stdin
+          make prepare-embed
+          # Only the architecture of INSTANCE_TYPE is pulled; change this with it.
+          make image-push IMG="$IMAGE_REPOSITORY:$IMAGE_TAG" PLATFORM=linux/amd64
+          echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  # One leg per IP family. Each leg creates its own cluster, deploys the controller under test on
+  # the dataplane, and runs the cyclonus suite. fail-fast: false so one leg failing does not cancel the other.
+  e2e:
+    needs: [check-trigger, build-image]
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: ubuntu-24.04
+    # cyclonus runs ~3h and cluster setup ~30m. Cap below the 6h credential/GitHub job limit.
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        ip-family: [IPv4, IPv6]
+    env:
+      IP_FAMILY: ${{ matrix.ip-family }}
+      CLUSTER_NAME: npc-e2e-pr-${{ github.event.issue.number }}-${{ github.run_id }}-${{ matrix.ip-family }}
+      KUBECONFIG: ${{ github.workspace }}/.kube/config
+      K8S_VERSION: ${{ needs.build-image.outputs.k8s-version }}
+      # Optional mirror for the cyclonus and agnhost images; unset uses the upstream images.
+      TEST_IMAGE_REGISTRY: ${{ secrets.TEST_IMAGE_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-trigger.outputs.pr-sha }}
+          persist-credentials: false
+
+      # helm, kubectl, aws, jq and python3 come with the runner image.
+      - name: Set up eksctl
+        run: |
+          curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin/
+          eksctl version
+          helm version --short
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          role-duration-seconds: 21600
+
+      # PRs whose head predates this workflow lack scripts/eks-test-cluster.sh and fail here;
+      # rebase them onto main.
+      - name: Create EKS cluster (${{ matrix.ip-family }})
+        run: ./scripts/eks-test-cluster.sh create
+
+      - name: Deploy controller on dataplane
+        env:
+          NP_CONTROLLER_IMAGE: ${{ needs.build-image.outputs.image-repository }}
+          NP_CONTROLLER_TAG: ${{ needs.build-image.outputs.image-tag }}
+        run: ./scripts/deploy-controller-on-dataplane.sh
+
+      # The report job finds this step by name. No continue-on-error, so a failed suite fails the
+      # job and the step conclusion reflects the result.
+      - name: Run cyclonus suite
+        env:
+          SKIP_CNI_INSTALLATION: "true"
+          DISABLE_CP_NETWORK_POLICY_CONTROLLER: "true"
+        run: ./scripts/run-cyclonus-tests.sh
+
+  # Posts one comment per IP family. It reads the cyclonus step conclusion through the API, so the
+  # jobs that run PR code never hold a token that can write to issues or pull requests.
+  report:
+    needs: [check-trigger, build-image, e2e]
+    if: always() && needs.check-trigger.result == 'success'
+    permissions:
+      actions: read
+      issues: write
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ip-family: [IPv4, IPv6]
+    steps:
+      - name: Post results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ipFamily = '${{ matrix.ip-family }}';
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo,
+              run_id: context.runId,
+              filter: 'latest',
+            });
+            const job = jobs.find(j => j.name === `e2e (${ipFamily})`);
+            const step = job?.steps?.find(s => s.name === 'Run cyclonus suite');
+            // A skipped or missing cyclonus step means an earlier step failed, which is a failure too.
+            const outcome = step?.conclusion ?? '';
+            const failed = outcome !== 'success';
+            const runUrl = job?.html_url ??
+              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: ${{ github.event.issue.number }},
+              body: [
+                `## e2e Test Results (${ipFamily}): ${failed ? '❌ Failed' : '✅ Passed'}`,
+                `- **Commit:** \`${{ needs.check-trigger.outputs.pr-sha }}\``,
+                `- **K8s Version:** ${{ needs.build-image.outputs.k8s-version }}`,
+                `- **Image:** \`${{ needs.build-image.outputs.image-repository }}:${{ needs.build-image.outputs.image-tag }}\``,
+                `- ${failed ? '❌' : '✅'} cyclonus (${outcome || 'not run'})`,
+                `- **[Full logs](${runUrl})**`
+              ].join('\n')
+            });
+            if (failed) core.setFailed(`e2e tests failed (${ipFamily})`);
+
+  cleanup:
+    needs: [check-trigger, e2e]
+    if: always() && needs.check-trigger.result == 'success'
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: ubuntu-latest
+    # Up to three eksctl --wait deletes plus direct stack retries; keep below the credential duration.
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        ip-family: [IPv4, IPv6]
+    env:
+      CLUSTER_NAME: npc-e2e-pr-${{ github.event.issue.number }}-${{ github.run_id }}-${{ matrix.ip-family }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check-trigger.outputs.pr-sha }}
+          persist-credentials: false
+
+      - name: Install eksctl
+        run: |
+          curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          role-duration-seconds: 7200
+
+      - name: Delete EKS cluster
+        run: ./scripts/eks-test-cluster.sh delete
