@@ -21,9 +21,10 @@ env:
 
 jobs:
   check-trigger:
+    # Commenting on a pull request through the issues API needs pull-requests: write.
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
     if: |
       github.repository == 'aws/amazon-network-policy-controller-k8s' &&
       github.event.issue.pull_request != null &&
@@ -211,6 +212,7 @@ jobs:
     permissions:
       actions: read
       issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
