@@ -28,6 +28,8 @@ const (
 	flagLeaderElectionID        = "leader-election-id"
 	flagLeaderElectionNamespace = "leader-election-namespace"
 	flagWatchNamespace          = "watch-namespace"
+	flagKubeAPIQPS              = "kube-api-qps"
+	flagKubeAPIBurst            = "kube-api-burst"
 
 	defaultKubeconfig              = ""
 	defaultLeaderElectionID        = "amazon-network-policy-controller-k8s"
@@ -50,6 +52,8 @@ type RuntimeConfig struct {
 	LeaderElectionNamespace string
 	WatchNamespace          string
 	SyncPeriod              time.Duration
+	KubeAPIQPS              float32
+	KubeAPIBurst            int
 }
 
 func (c *RuntimeConfig) BindFlags(fs *pflag.FlagSet) {
@@ -68,6 +72,10 @@ func (c *RuntimeConfig) BindFlags(fs *pflag.FlagSet) {
 		"Name of the leader election ID to use for this controller")
 	fs.StringVar(&c.WatchNamespace, flagWatchNamespace, defaultWatchNamespace,
 		"Namespace the controller watches for updates to Kubernetes objects, If empty, all namespaces are watched.")
+	fs.Float32Var(&c.KubeAPIQPS, flagKubeAPIQPS, defaultQPS,
+		"Maximum queries per second from the controller to the Kubernetes API server.")
+	fs.IntVar(&c.KubeAPIBurst, flagKubeAPIBurst, defaultBurst,
+		"Maximum burst of queries from the controller to the Kubernetes API server.")
 }
 
 // BuildRestConfig builds the REST config for the controller runtime
@@ -84,8 +92,8 @@ func BuildRestConfig(rtCfg RuntimeConfig) (*rest.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	restCFG.QPS = defaultQPS
-	restCFG.Burst = defaultBurst
+	restCFG.QPS = rtCfg.KubeAPIQPS
+	restCFG.Burst = rtCfg.KubeAPIBurst
 	return restCFG, nil
 }
 
