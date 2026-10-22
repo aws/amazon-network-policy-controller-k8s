@@ -170,7 +170,7 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: ko
 ko: $(KO)
 $(KO): $(LOCALBIN)
-	test -s $(LOCALBIN)/ko || GOBIN=$(LOCALBIN) go install github.com/google/ko@v0.15.2
+	test -s $(LOCALBIN)/ko || GOBIN=$(LOCALBIN) go install github.com/google/ko@v0.19.1
 
 .PHONY: mockgen
 mockgen: $(MOCKGEN)
@@ -203,6 +203,10 @@ format:       ## Format all Go source code files.
 	  -type f \
 	  -name '*.go' \
 	  -print0 | sort -z | xargs -0 -- goimports $(or $(FORMAT_FLAGS),-w) | wc -l | bc)
+
+.PHONY: run-startup-scale-test
+run-startup-scale-test: ## Runs the kwok based controller startup scale test against the cluster in the current kubeconfig. See test/e2e/startup/README.md
+	go test -tags e2e -timeout 150m -v ./test/e2e/startup/... -ginkgo.v
 
 run-cyclonus-test: ## Runs cyclonus tests on an existing cluster. Call with CLUSTER_NAME=<name of your cluster> to execute cyclonus test
 ifdef CLUSTER_NAME
