@@ -609,7 +609,7 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 			}
 			for _, item := range tt.nsGetCalls {
 				call := item
-				mockClient.EXPECT().Get(gomock.Any(), call.nsRef, gomock.Any()).DoAndReturn(
+				mockClient.EXPECT().Get(gomock.Any(), call.nsRef, gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 					func(ctx context.Context, key types.NamespacedName, ns *corev1.Namespace, opts ...client.GetOption) error {
 						if call.ns != nil {
 							*ns = *call.ns
@@ -620,7 +620,7 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 			}
 			for _, item := range tt.policyGetCalls {
 				call := item
-				mockClient.EXPECT().Get(gomock.Any(), call.policyRef, gomock.Any()).DoAndReturn(
+				mockClient.EXPECT().Get(gomock.Any(), call.policyRef, gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 					func(ctx context.Context, key types.NamespacedName, policy *networking.NetworkPolicy, opts ...client.GetOption) error {
 						if call.policy != nil {
 							*policy = *call.policy
@@ -631,7 +631,7 @@ func TestPolicyReferenceResolver_GetReferredPoliciesForPod(t *testing.T) {
 			}
 			for _, item := range tt.policyListCalls {
 				call := item
-				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), client.InNamespace(tt.pod.Namespace)).DoAndReturn(
+				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), client.InNamespace(tt.pod.Namespace), client.UnsafeDisableDeepCopy).DoAndReturn(
 					func(ctx context.Context, policyList *networking.NetworkPolicyList, opts ...client.ListOption) error {
 						for _, policy := range call.policies {
 							policyList.Items = append(policyList.Items, *(policy.DeepCopy()))
@@ -1211,7 +1211,7 @@ func TestPolicyReferenceResolver_isPodLabelMatchPeer(t *testing.T) {
 			}
 			for _, item := range tt.nsGetCalls {
 				call := item
-				mockClient.EXPECT().Get(gomock.Any(), call.nsRef, gomock.Any()).DoAndReturn(
+				mockClient.EXPECT().Get(gomock.Any(), call.nsRef, gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 					func(ctx context.Context, key types.NamespacedName, ns *corev1.Namespace, opts ...client.GetOption) error {
 						if call.ns != nil {
 							*ns = *call.ns
@@ -1257,7 +1257,7 @@ func TestPolicyReferenceResolver_GetReferredClusterPoliciesForPod(t *testing.T) 
 		Items: []policyinfo.ClusterNetworkPolicy{*cnp1, *cnp2},
 	}
 
-	mockClient.EXPECT().List(gomock.Any(), gomock.Any()).DoAndReturn(
+	mockClient.EXPECT().List(gomock.Any(), gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 		func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 			list.(*policyinfo.ClusterNetworkPolicyList).Items = cnpList.Items
 			return nil
@@ -1510,7 +1510,7 @@ func TestPolicyReferenceResolver_GetReferredApplicationNetworkPoliciesForPod(t *
 				policyTracker.UpdateGenericPolicy(anp)
 			}
 
-			mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+			mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 				func(ctx context.Context, list *policyinfo.ApplicationNetworkPolicyList, opts ...client.ListOption) error {
 					if tt.policyList != nil {
 						*list = *tt.policyList
@@ -1520,7 +1520,7 @@ func TestPolicyReferenceResolver_GetReferredApplicationNetworkPoliciesForPod(t *
 			).AnyTimes()
 
 			for _, call := range tt.policyGetCalls {
-				mockClient.EXPECT().Get(gomock.Any(), call.policyRef, gomock.Any()).DoAndReturn(
+				mockClient.EXPECT().Get(gomock.Any(), call.policyRef, gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 					func(ctx context.Context, key types.NamespacedName, obj *policyinfo.ApplicationNetworkPolicy, opts ...client.GetOption) error {
 						if call.policy != nil {
 							*obj = *call.policy
