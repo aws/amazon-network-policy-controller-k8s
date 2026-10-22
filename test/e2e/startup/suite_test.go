@@ -57,6 +57,10 @@ type testConfig struct {
 	createConcurrency     int
 }
 
+// cacheSyncTimeout is controller-runtime's default CacheSyncTimeout, which the policy controller does not
+// override. Keep it in sync if the controller starts setting one.
+const cacheSyncTimeout = 2 * time.Minute
+
 var (
 	cfg       testConfig
 	k8sClient client.Client
@@ -96,7 +100,7 @@ func loadTestConfig() testConfig {
 		controllerNS:          envOrDefault("NPC_NAMESPACE", "kube-system"),
 		controllerName:        envOrDefault("NPC_DEPLOYMENT", "amazon-network-policy-controller-k8s"),
 		startupTimeout:        envDurationOrDefault("NPC_STARTUP_TIMEOUT", 20*time.Minute),
-		firstReconcileTimeout: envDurationOrDefault("NPC_FIRST_RECONCILE_TIMEOUT", 3*time.Minute),
+		firstReconcileTimeout: envDurationOrDefault("NPC_FIRST_RECONCILE_TIMEOUT", 30*time.Second),
 		cacheWarmup:           envDurationOrDefault("NPC_CACHE_WARMUP", time.Minute),
 		keepResources:         envBool("NPC_SCALE_KEEP_RESOURCES"),
 		skipKwokInstall:       envBool("KWOK_SKIP_INSTALL"),
@@ -120,6 +124,10 @@ func loadTestConfig() testConfig {
 	Expect(w.namespaces).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACES must be positive")
 	Expect(w.namespaceGroups).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACE_GROUPS must be positive")
 	Expect(c.appLabels).To(BeNumerically(">", 0), "NPC_SCALE_APP_LABELS must be positive")
+	// A stall longer than CacheSyncTimeout restarts the pod, so a bound at or above it can never fail.
+	Expect(c.firstReconcileTimeout).To(BeNumerically("<", cacheSyncTimeout),
+		"NPC_FIRST_RECONCILE_TIMEOUT must be below the controller's CacheSyncTimeout (%s) to detect a startup stall",
+		cacheSyncTimeout)
 	// kwok assigns pod IPs from the node's /22.
 	Expect(c.kwokNodes*kwokPodsPerNode).To(BeNumerically(">=", c.pods),
 		"%d kwok nodes hold at most %d pods, raise NPC_SCALE_KWOK_NODES", c.kwokNodes, c.kwokNodes*kwokPodsPerNode)

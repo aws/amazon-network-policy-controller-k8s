@@ -61,8 +61,12 @@ const (
 //
 // The spec passes only when the controller starts without restarting, creates its first PolicyEndpoint within
 // NPC_FIRST_RECONCILE_TIMEOUT of becoming leader, and produces endpoints for every policy within
-// NPC_STARTUP_TIMEOUT of the lease being released. The first bound catches a leader that is stuck behind the
-// startup barrier but has not yet hit CacheSyncTimeout, the second catches reconciliation that is too slow.
+// NPC_STARTUP_TIMEOUT of the lease being released.
+//
+// A restart only shows up when the barrier takes longer than CacheSyncTimeout (2m), which depends on the
+// workload shape and on the node's CPU. The first-PolicyEndpoint bound catches a shorter stall, so it has to
+// be well below CacheSyncTimeout: a stall that outlasts it already restarts the pod, and one that does not
+// would pass a longer bound. A healthy leader creates its first PolicyEndpoint within seconds.
 var _ = Describe("controller startup at scale", Ordered, func() {
 	var (
 		ctx              = context.Background()

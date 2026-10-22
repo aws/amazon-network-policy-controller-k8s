@@ -24,6 +24,11 @@ of becoming leader, and creates endpoints for every policy within `NPC_STARTUP_T
 and reports the restart reason, the previous container logs, and how long the leader held the lease before the first
 PolicyEndpoint appeared.
 
+The pod only restarts when the stall exceeds `CacheSyncTimeout` (2m), which depends on the workload shape and the
+node's CPU, so the first-PolicyEndpoint bound is what makes the result independent of both. It must stay well below
+2m (the test refuses a value that is not): a healthy leader creates its first PolicyEndpoint within seconds, while a
+build with the startup stall takes over a minute even when it does not restart.
+
 ### Scenarios
 
 `NPC_SCALE_SCENARIO` picks the shape of the workload; each one exercises a different controller code path (see
@@ -69,7 +74,7 @@ make run-startup-scale-test
 | `NPC_SCALE_KEEP_RESOURCES` | `false` | skip deleting the namespace and kwok nodes afterwards |
 | `NPC_SCALE_CREATE_CONCURRENCY` | `64` | parallel create requests |
 | `NPC_STARTUP_TIMEOUT` | `20m` | how long the controller has to reconcile every policy after the lease is released |
-| `NPC_FIRST_RECONCILE_TIMEOUT` | `3m` | how long the leader may hold the lease before creating its first PolicyEndpoint |
+| `NPC_FIRST_RECONCILE_TIMEOUT` | `30s` | how long the leader may hold the lease before creating its first PolicyEndpoint; must be below 2m |
 | `NPC_CACHE_WARMUP` | `1m` | how long the controller pods sync caches before the lease is released |
 | `NPC_NAMESPACE` / `NPC_DEPLOYMENT` | `kube-system` / `amazon-network-policy-controller-k8s` | controller deployment |
 | `KWOK_VERSION` | `v0.8.0` | kwok release to install |
