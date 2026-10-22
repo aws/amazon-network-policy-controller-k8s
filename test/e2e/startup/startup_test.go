@@ -59,206 +59,251 @@ const (
 // wins the lease before the policy cache fills, which makes the pod pass cheap, so the spec holds the leader
 // lease itself while the controller pods start and sync their caches, then releases it.
 //
-// The spec passes only when the controller starts without restarting, creates its first PolicyEndpoint within
-// NPC_FIRST_RECONCILE_TIMEOUT of becoming leader, and produces endpoints for every policy within
-// NPC_STARTUP_TIMEOUT of the lease being released.
+// The spec measures the barrier directly: the time from the leader acquiring the lease (the lease's acquireTime)
+// to the policy controller logging "Starting workers", which controller-runtime only does once every source's
+// initial events have been handled. A healthy build clears it within a second whatever the workload; a build
+// that does expensive work per initial event takes tens of seconds or more, and restarts once it exceeds
+// CacheSyncTimeout (2m). Waiting for a restart alone would make the result depend on the workload shape and the
+// node's CPU, so the spec fails as soon as the barrier exceeds NPC_STARTUP_BARRIER_TIMEOUT, which must be well
+// below CacheSyncTimeout.
 //
-// A restart only shows up when the barrier takes longer than CacheSyncTimeout (2m), which depends on the
-// workload shape and on the node's CPU. The first-PolicyEndpoint bound catches a shorter stall, so it has to
-// be well below CacheSyncTimeout: a stall that outlasts it already restarts the pod, and one that does not
-// would pass a longer bound. A healthy leader creates its first PolicyEndpoint within seconds.
-var _ = Describe("controller startup at scale", Ordered, func() {
-	var (
-		ctx              = context.Background()
-		originalReplicas int32
-	)
+// The spec passes only when the controller starts without restarting, clears the barrier within
+// NPC_STARTUP_BARRIER_TIMEOUT, creates its first PolicyEndpoint within NPC_FIRST_RECONCILE_TIMEOUT of becoming
+// leader, and produces endpoints for every policy within NPC_STARTUP_TIMEOUT of the lease being released. It
+// runs once per scenario in NPC_SCALE_SCENARIOS.
+var _ = describeStartupScenarios()
 
-	BeforeAll(func() {
-		By(fmt.Sprintf("using scenario=%s pods=%d policies=%d kwokNodes=%d namespace=%s %s",
-			cfg.scenario, cfg.pods, cfg.policies, cfg.kwokNodes, cfg.namespace, cfg.workload))
+func describeStartupScenarios() bool {
+	for _, name := range startupScenarios {
+		describeStartupScenario(name)
+	}
+	return true
+}
 
-		if !cfg.skipKwokInstall {
-			preinstalled := kwokInstalled(ctx)
-			By("installing kwok " + cfg.kwokVersion)
-			Expect(installKwok(cfg.kwokVersion)).To(Succeed())
-			if cfg.uninstallKwok && !preinstalled {
-				DeferCleanup(func() {
-					Expect(uninstallKwok(cfg.kwokVersion)).To(Succeed())
-				})
-			}
-		}
-
-		deploy := &appsv1.Deployment{}
-		Expect(k8sClient.Get(ctx, controllerKey(), deploy)).To(Succeed())
-		expectControllerRunsOnDataplane(ctx, deploy)
-
-		By("scaling the network policy controller down so it starts against a fully populated cluster")
-		originalReplicas = ptr.Deref(deploy.Spec.Replicas, 1)
-		Expect(originalReplicas).To(BeNumerically(">", 0), "controller deployment is already scaled to zero")
-		DeferCleanup(func() {
-			By(fmt.Sprintf("restoring the controller to %d replicas", originalReplicas))
-			Expect(scaleController(ctx, originalReplicas)).To(Succeed())
-		})
-		Expect(scaleController(ctx, 0)).To(Succeed())
-		// Pods on unreachable nodes can stay Terminating indefinitely; only pods created after the scale up are
-		// considered below, so it is enough that none are left running.
-		Eventually(func() (int, error) {
-			pods, err := controllerPods(ctx)
-			running := 0
-			for _, pod := range pods {
-				if pod.DeletionTimestamp.IsZero() {
-					running++
-				}
-			}
-			return running, err
-		}).WithTimeout(3 * time.Minute).WithPolling(pollInterval).Should(BeZero())
-
-		By("creating kwok nodes")
-		DeferCleanup(func() {
-			if cfg.keepResources {
-				return
-			}
-			By("deleting kwok nodes")
-			Expect(deleteKwokNodes(ctx)).To(Succeed())
-		})
-		Expect(createConcurrently(cfg.kwokNodes, func(i int) client.Object { return newKwokNode(i) })).To(Succeed())
-		Eventually(readyKwokNodes).WithContext(ctx).WithTimeout(3 * time.Minute).WithPolling(pollInterval).
-			Should(Equal(cfg.kwokNodes))
-
-		DeferCleanup(func() {
-			if cfg.keepResources {
-				return
-			}
-			deleteTestResources(ctx)
-		})
-		createWorkload(ctx)
-		Eventually(runningPodsWithIP).WithContext(ctx).WithTimeout(20 * time.Minute).WithPolling(10 * time.Second).
-			Should(Equal(cfg.pods))
-	})
-
-	It("starts and reconciles every policy without restarting", func() {
-		By("holding the leader lease so the controller syncs its caches before it can become leader")
-		scaleUpTime := time.Now()
-		releaseLease := holdLease(ctx)
-		DeferCleanup(releaseLease)
-
-		By(fmt.Sprintf("scaling the controller up to %d replicas", originalReplicas))
-		Expect(scaleController(ctx, originalReplicas)).To(Succeed())
-		Eventually(func() (int, error) {
-			pods, err := controllerPodsCreatedAfter(ctx, scaleUpTime)
-			ready := 0
-			for i := range pods {
-				if isPodReady(&pods[i]) {
-					ready++
-				}
-			}
-			return ready, err
-		}).WithTimeout(5 * time.Minute).WithPolling(pollInterval).Should(BeEquivalentTo(originalReplicas))
-		By(fmt.Sprintf("waiting %s for the controller caches to sync", cfg.cacheWarmup))
-		time.Sleep(cfg.cacheWarmup)
-
-		By("releasing the leader lease")
-		releaseLease()
-		startTime := time.Now()
-
+func describeStartupScenario(scenario string) {
+	Describe(fmt.Sprintf("controller startup at scale (%s)", scenario), Ordered, func() {
 		var (
-			expected         = cfg.workload.expectedPolicies()
-			leader           string
-			leaderAcquired   time.Duration
-			firstReconciled  time.Duration
-			allReconciled    time.Duration
-			reconciledCount  int
-			restartedPod     *corev1.Pod
-			restartedMessage string
-			idleFailure      string
-			peak             controllerMetrics
+			ctx              = context.Background()
+			originalReplicas int32
 		)
-		deadline := startTime.Add(cfg.startupTimeout)
-		for time.Now().Before(deadline) {
-			elapsed := time.Since(startTime).Round(time.Second)
 
-			pods, err := controllerPodsCreatedAfter(ctx, scaleUpTime)
-			Expect(err).NotTo(HaveOccurred())
-			for i := range pods {
-				if msg := restartMessage(&pods[i]); msg != "" {
-					restartedPod, restartedMessage = &pods[i], msg
+		BeforeAll(func() {
+			// The workload generators read cfg; scenarios run one after the other.
+			cfg.scenario, cfg.workload = scenario, workloadFor(scenario)
+			By(fmt.Sprintf("using scenario=%s pods=%d policies=%d kwokNodes=%d namespace=%s %s",
+				cfg.scenario, cfg.pods, cfg.policies, cfg.kwokNodes, cfg.namespace, cfg.workload))
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, controllerKey(), deploy)).To(Succeed())
+			expectControllerRunsOnDataplane(ctx, deploy)
+
+			By("scaling the network policy controller down so it starts against a fully populated cluster")
+			originalReplicas = ptr.Deref(deploy.Spec.Replicas, 1)
+			Expect(originalReplicas).To(BeNumerically(">", 0), "controller deployment is already scaled to zero")
+			DeferCleanup(func() {
+				By(fmt.Sprintf("restoring the controller to %d replicas", originalReplicas))
+				Expect(scaleController(ctx, originalReplicas)).To(Succeed())
+			})
+			Expect(scaleController(ctx, 0)).To(Succeed())
+			// Pods on unreachable nodes can stay Terminating indefinitely; only pods created after the scale up are
+			// considered below, so it is enough that none are left running.
+			Eventually(func() (int, error) {
+				pods, err := controllerPods(ctx)
+				running := 0
+				for _, pod := range pods {
+					if pod.DeletionTimestamp.IsZero() {
+						running++
+					}
 				}
+				return running, err
+			}).WithTimeout(3 * time.Minute).WithPolling(pollInterval).Should(BeZero())
+
+			By("creating kwok nodes")
+			DeferCleanup(func() {
+				if cfg.keepResources {
+					return
+				}
+				By("deleting kwok nodes")
+				Expect(deleteKwokNodes(ctx)).To(Succeed())
+			})
+			Expect(createConcurrently(cfg.kwokNodes, func(i int) client.Object { return newKwokNode(i) })).To(Succeed())
+			Eventually(readyKwokNodes).WithContext(ctx).WithTimeout(3 * time.Minute).WithPolling(pollInterval).
+				Should(Equal(cfg.kwokNodes))
+
+			DeferCleanup(func() {
+				if cfg.keepResources {
+					return
+				}
+				deleteTestResources(ctx)
+			})
+			createWorkload(ctx)
+			Eventually(runningPodsWithIP).WithContext(ctx).WithTimeout(20 * time.Minute).WithPolling(10 * time.Second).
+				Should(Equal(cfg.pods))
+		})
+
+		It("starts and reconciles every policy without restarting", func() {
+			By("holding the leader lease so the controller syncs its caches before it can become leader")
+			scaleUpTime := time.Now()
+			releaseLease := holdLease(ctx)
+			DeferCleanup(releaseLease)
+
+			By(fmt.Sprintf("scaling the controller up to %d replicas", originalReplicas))
+			Expect(scaleController(ctx, originalReplicas)).To(Succeed())
+			Eventually(func() (int, error) {
+				pods, err := controllerPodsCreatedAfter(ctx, scaleUpTime)
+				ready := 0
+				for i := range pods {
+					if isPodReady(&pods[i]) {
+						ready++
+					}
+				}
+				return ready, err
+			}).WithTimeout(5 * time.Minute).WithPolling(pollInterval).Should(BeEquivalentTo(originalReplicas))
+			By(fmt.Sprintf("waiting %s for the controller caches to sync", cfg.cacheWarmup))
+			time.Sleep(cfg.cacheWarmup)
+
+			By("releasing the leader lease")
+			releaseLease()
+			startTime := time.Now()
+
+			var (
+				expected         = cfg.workload.expectedPolicies()
+				leader           string
+				leaderAcquiredAt time.Time
+				leaderAcquired   time.Duration
+				barrier          time.Duration
+				barrierMeasured  bool
+				barrierFailure   string
+				firstReconciled  time.Duration
+				allReconciled    time.Duration
+				reconciledCount  int
+				restartedPod     *corev1.Pod
+				restartedMessage string
+				idleFailure      string
+				peak             controllerMetrics
+			)
+			deadline := startTime.Add(cfg.startupTimeout)
+			for time.Now().Before(deadline) {
+				elapsed := time.Since(startTime).Round(time.Second)
+
+				pods, err := controllerPodsCreatedAfter(ctx, scaleUpTime)
+				Expect(err).NotTo(HaveOccurred())
+				for i := range pods {
+					if msg := restartMessage(&pods[i]); msg != "" {
+						restartedPod, restartedMessage = &pods[i], msg
+					}
+				}
+				if restartedPod != nil {
+					GinkgoWriter.Printf("[%s] controller pod %s restarted: %s\n", elapsed, restartedPod.Name, restartedMessage)
+					break
+				}
+
+				if leaderAcquired == 0 {
+					if leader, leaderAcquiredAt = newPodLeader(ctx, pods); leader != "" {
+						leaderAcquired = elapsed
+						GinkgoWriter.Printf("[%s] leader lease acquired by new controller pod %s\n", elapsed, leader)
+					}
+				}
+
+				if leader != "" && !barrierMeasured {
+					workersStarted, cacheSyncFailed, err := startupBarrier(leader)
+					switch {
+					case err != nil && elapsed-leaderAcquired <= cfg.startupBarrierTimeout:
+						GinkgoWriter.Printf("[%s] unable to read the logs of %s: %v\n", elapsed, leader, err)
+					case err != nil:
+						barrierFailure = fmt.Sprintf("unable to read the logs of %s to measure the startup barrier: %v",
+							leader, err)
+					case cacheSyncFailed:
+						barrierFailure = fmt.Sprintf("leader %s gave up waiting for its sources to sync (CacheSyncTimeout %s)",
+							leader, cacheSyncTimeout)
+					case !workersStarted.IsZero():
+						barrierMeasured = true
+						barrier = max(workersStarted.Sub(leaderAcquiredAt), 0)
+						GinkgoWriter.Printf("[%s] policy controller workers started %s after %s acquired the lease\n",
+							elapsed, barrier.Round(time.Millisecond), leader)
+						if barrier > cfg.startupBarrierTimeout {
+							barrierFailure = fmt.Sprintf("policy controller workers of %s started %s after it acquired the lease, "+
+								"more than %s", leader, barrier.Round(time.Millisecond), cfg.startupBarrierTimeout)
+						}
+					case elapsed-leaderAcquired > cfg.startupBarrierTimeout:
+						barrierFailure = fmt.Sprintf("policy controller workers of %s had not started %s after it acquired "+
+							"the lease", leader, cfg.startupBarrierTimeout)
+					}
+					if barrierFailure != "" {
+						break
+					}
+				}
+
+				reconciledCount, err = reconciledPolicies(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if reconciledCount > 0 && firstReconciled == 0 {
+					firstReconciled = elapsed
+					GinkgoWriter.Printf("[%s] first PolicyEndpoint created\n", elapsed)
+				}
+
+				progress := fmt.Sprintf("[%s] %d/%d policies have endpoints", elapsed, reconciledCount, expected)
+				if leader != "" {
+					if m, err := scrapeControllerMetrics(leader); err == nil {
+						peak.residentBytes = max(peak.residentBytes, m.residentBytes)
+						peak.heapInUseBytes = max(peak.heapInUseBytes, m.heapInUseBytes)
+						peak.queueDepth = max(peak.queueDepth, m.queueDepth)
+						progress += fmt.Sprintf(" reconciles=%.0f errors=%.0f queueDepth=%.0f activeWorkers=%.0f rss=%s",
+							m.reconciles, m.reconcileErrors, m.queueDepth, m.activeWorkers, mebibytes(m.residentBytes))
+					} else {
+						progress += fmt.Sprintf(" (metrics unavailable: %v)", err)
+					}
+				}
+				GinkgoWriter.Println(progress)
+
+				if reconciledCount == expected {
+					allReconciled = elapsed
+					break
+				}
+				if firstReconciled == 0 {
+					if leaderAcquired == 0 && elapsed > cfg.firstReconcileTimeout {
+						idleFailure = fmt.Sprintf("no new controller pod acquired the leader lease within %s of it being released",
+							cfg.firstReconcileTimeout)
+						break
+					}
+					if leaderAcquired > 0 && elapsed-leaderAcquired > cfg.firstReconcileTimeout {
+						idleFailure = fmt.Sprintf("leader %s held the lease for %s without creating a PolicyEndpoint",
+							leader, cfg.firstReconcileTimeout)
+						break
+					}
+				}
+				time.Sleep(pollInterval)
 			}
+
+			// Timings are relative to the lease being released.
+			AddReportEntry("startup timings", fmt.Sprintf(
+				"scenario=%s leaderAcquired=%s firstPolicyEndpoint=%s allPolicyEndpoints=%s reconciled=%d/%d",
+				cfg.scenario, leaderAcquired, firstReconciled, allReconciled, reconciledCount, expected))
+			if barrierMeasured {
+				AddReportEntry("startup barrier", barrier.Round(time.Millisecond).String())
+			}
+			if leaderAcquired > 0 && firstReconciled > 0 {
+				AddReportEntry("leader idle period", (firstReconciled - leaderAcquired).String())
+			}
+			AddReportEntry("leader peak usage", fmt.Sprintf("rss=%s heapInUse=%s queueDepth=%.0f",
+				mebibytes(peak.residentBytes), mebibytes(peak.heapInUseBytes), peak.queueDepth))
+
 			if restartedPod != nil {
-				GinkgoWriter.Printf("[%s] controller pod %s restarted: %s\n", elapsed, restartedPod.Name, restartedMessage)
-				break
+				logs := previousLogs(restartedPod.Name)
+				AddReportEntry("restarted controller logs", logs)
+				Fail(fmt.Sprintf("controller pod %s restarted during startup (%s)\n%s",
+					restartedPod.Name, restartedMessage, logs))
 			}
-
-			if leaderAcquired == 0 {
-				if leader = newPodLeader(ctx, pods); leader != "" {
-					leaderAcquired = elapsed
-					GinkgoWriter.Printf("[%s] leader lease acquired by new controller pod %s\n", elapsed, leader)
-				}
+			if barrierFailure != "" {
+				Fail(barrierFailure)
 			}
-
-			reconciledCount, err = reconciledPolicies(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			if reconciledCount > 0 && firstReconciled == 0 {
-				firstReconciled = elapsed
-				GinkgoWriter.Printf("[%s] first PolicyEndpoint created\n", elapsed)
+			if idleFailure != "" {
+				Fail(idleFailure)
 			}
-
-			progress := fmt.Sprintf("[%s] %d/%d policies have endpoints", elapsed, reconciledCount, expected)
-			if leader != "" {
-				if m, err := scrapeControllerMetrics(leader); err == nil {
-					peak.residentBytes = max(peak.residentBytes, m.residentBytes)
-					peak.heapInUseBytes = max(peak.heapInUseBytes, m.heapInUseBytes)
-					peak.queueDepth = max(peak.queueDepth, m.queueDepth)
-					progress += fmt.Sprintf(" reconciles=%.0f errors=%.0f queueDepth=%.0f activeWorkers=%.0f rss=%s",
-						m.reconciles, m.reconcileErrors, m.queueDepth, m.activeWorkers, mebibytes(m.residentBytes))
-				} else {
-					progress += fmt.Sprintf(" (metrics unavailable: %v)", err)
-				}
-			}
-			GinkgoWriter.Println(progress)
-
-			if reconciledCount == expected {
-				allReconciled = elapsed
-				break
-			}
-			if firstReconciled == 0 {
-				if leaderAcquired == 0 && elapsed > cfg.firstReconcileTimeout {
-					idleFailure = fmt.Sprintf("no new controller pod acquired the leader lease within %s of it being released",
-						cfg.firstReconcileTimeout)
-					break
-				}
-				if leaderAcquired > 0 && elapsed-leaderAcquired > cfg.firstReconcileTimeout {
-					idleFailure = fmt.Sprintf("leader %s held the lease for %s without creating a PolicyEndpoint",
-						leader, cfg.firstReconcileTimeout)
-					break
-				}
-			}
-			time.Sleep(pollInterval)
-		}
-
-		// Timings are relative to the lease being released.
-		AddReportEntry("startup timings", fmt.Sprintf(
-			"scenario=%s leaderAcquired=%s firstPolicyEndpoint=%s allPolicyEndpoints=%s reconciled=%d/%d",
-			cfg.scenario, leaderAcquired, firstReconciled, allReconciled, reconciledCount, expected))
-		if leaderAcquired > 0 && firstReconciled > 0 {
-			AddReportEntry("leader idle period", (firstReconciled - leaderAcquired).String())
-		}
-		AddReportEntry("leader peak usage", fmt.Sprintf("rss=%s heapInUse=%s queueDepth=%.0f",
-			mebibytes(peak.residentBytes), mebibytes(peak.heapInUseBytes), peak.queueDepth))
-
-		if restartedPod != nil {
-			logs := previousLogs(restartedPod.Name)
-			AddReportEntry("restarted controller logs", logs)
-			Fail(fmt.Sprintf("controller pod %s restarted during startup (%s)\n%s",
-				restartedPod.Name, restartedMessage, logs))
-		}
-		if idleFailure != "" {
-			Fail(idleFailure)
-		}
-		Expect(reconciledCount).To(Equal(expected),
-			"controller did not create endpoints for all policies within %s", cfg.startupTimeout)
+			Expect(reconciledCount).To(Equal(expected),
+				"controller did not create endpoints for all policies within %s", cfg.startupTimeout)
+		})
 	})
-})
+}
 
 // expectControllerRunsOnDataplane fails the spec unless the deployment under test can become leader. The EKS
 // control plane controller competes for the same lease while enable-network-policy-controller is "true", and
@@ -430,20 +475,58 @@ func previousLogs(podName string) string {
 	return out
 }
 
-// newPodLeader returns the name of the pod in pods that holds the leader lease, or "" if none does.
-// controller-runtime sets the holder identity to <hostname>_<uuid>, and a pod's hostname is its name.
-func newPodLeader(ctx context.Context, pods []corev1.Pod) string {
+// newPodLeader returns the name of the pod in pods that holds the leader lease and when it acquired it, or ""
+// if none does. controller-runtime sets the holder identity to <hostname>_<uuid>, and a pod's hostname is its
+// name. The acquire time is written by the leader itself, on the same clock as its log timestamps.
+func newPodLeader(ctx context.Context, pods []corev1.Pod) (string, time.Time) {
 	lease := &coordinationv1.Lease{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cfg.controllerNS, Name: leaderElectionID}, lease); err != nil {
-		return ""
+		return "", time.Time{}
 	}
 	holder, _, _ := strings.Cut(ptr.Deref(lease.Spec.HolderIdentity, ""), "_")
 	for _, pod := range pods {
 		if holder == pod.Name {
-			return pod.Name
+			acquired := time.Now()
+			if lease.Spec.AcquireTime != nil {
+				acquired = lease.Spec.AcquireTime.Time
+			}
+			return pod.Name, acquired
 		}
 	}
-	return ""
+	return "", time.Time{}
+}
+
+// startupBarrier reads the logs of a controller pod and reports when the policy controller started its workers,
+// or whether it gave up waiting for its sources to sync. The zero time means the workers have not started yet.
+func startupBarrier(podName string) (time.Time, bool, error) {
+	logs, err := kubectlQuiet("-n", cfg.controllerNS, "logs", podName, "--timestamps")
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	workersStarted, cacheSyncFailed := parseStartupBarrier(logs)
+	return workersStarted, cacheSyncFailed, nil
+}
+
+// parseStartupBarrier scans logs printed by kubectl logs --timestamps, which prefixes each line with an
+// RFC3339Nano timestamp. controller-runtime logs "Starting workers" for a controller only after every source has
+// synced, including handling its initial events, and "Could not wait for Cache to sync" when CacheSyncTimeout
+// expires first.
+func parseStartupBarrier(logs string) (workersStarted time.Time, cacheSyncFailed bool) {
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, `"controller":"policy"`) {
+			continue
+		}
+		switch {
+		case strings.Contains(line, `"msg":"Starting workers"`):
+			ts, _, _ := strings.Cut(line, " ")
+			if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+				return t, false
+			}
+		case strings.Contains(line, `"msg":"Could not wait for Cache to sync"`):
+			cacheSyncFailed = true
+		}
+	}
+	return time.Time{}, cacheSyncFailed
 }
 
 // reconciledPolicies returns the number of test policies, of any kind, that have at least one PolicyEndpoint or

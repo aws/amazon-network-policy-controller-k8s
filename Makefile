@@ -206,7 +206,7 @@ format:       ## Format all Go source code files.
 
 .PHONY: run-startup-scale-test
 run-startup-scale-test: ## Runs the kwok based controller startup scale test against the cluster in the current kubeconfig. See test/e2e/startup/README.md
-	go test -tags e2e -timeout 90m -v ./test/e2e/startup/... -ginkgo.v
+	go test -tags e2e -timeout 150m -v ./test/e2e/startup/... -ginkgo.v
 
 run-cyclonus-test: ## Runs cyclonus tests on an existing cluster. Call with CLUSTER_NAME=<name of your cluster> to execute cyclonus test
 ifdef CLUSTER_NAME

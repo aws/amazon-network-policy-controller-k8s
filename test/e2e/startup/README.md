@@ -19,20 +19,25 @@ The test:
 5. Releases the lease, then polls the controller pods, the lease, PolicyEndpoints and ClusterPolicyEndpoints, and the
    leader's metrics (reconciles, queue depth, memory).
 
-It passes only if the controller never restarts, creates its first PolicyEndpoint within `NPC_FIRST_RECONCILE_TIMEOUT`
-of becoming leader, and creates endpoints for every policy within `NPC_STARTUP_TIMEOUT`. On affected builds it fails
-and reports the restart reason, the previous container logs, and how long the leader held the lease before the first
-PolicyEndpoint appeared.
+The main check is the startup barrier itself: the time from the leader acquiring the lease (the lease's
+`acquireTime`) to the policy controller logging `Starting workers`, which controller-runtime only does once every
+source's initial events have been handled. A healthy build clears it within a second whatever the workload. A build
+that does expensive work per initial event stalls for tens of seconds or more, and only restarts once the stall
+exceeds `CacheSyncTimeout` (2m), which depends on the workload shape and the node's CPU. So the test fails as soon as
+the barrier exceeds `NPC_STARTUP_BARRIER_TIMEOUT`, rather than waiting for a restart.
 
-The pod only restarts when the stall exceeds `CacheSyncTimeout` (2m), which depends on the workload shape and the
-node's CPU, so the first-PolicyEndpoint bound is what makes the result independent of both. It must stay well below
-2m (the test refuses a value that is not): a healthy leader creates its first PolicyEndpoint within seconds, while a
-build with the startup stall takes over a minute even when it does not restart.
+It passes only if the controller never restarts, clears the barrier within `NPC_STARTUP_BARRIER_TIMEOUT`, creates its
+first PolicyEndpoint within `NPC_FIRST_RECONCILE_TIMEOUT` of becoming leader, and creates endpoints for every policy
+within `NPC_STARTUP_TIMEOUT`. Both startup bounds must stay below 2m; the test refuses values that are not. On affected
+builds it reports the barrier, the restart reason and previous container logs, and how long the leader held the lease
+before the first PolicyEndpoint appeared.
 
 ### Scenarios
 
-`NPC_SCALE_SCENARIO` picks the shape of the workload; each one exercises a different controller code path (see
-`scenarios.go`). The individual `NPC_SCALE_*` variables below override the preset.
+`NPC_SCALE_SCENARIOS` lists the workload shapes to run, one after the other; each one exercises a different
+controller code path (see `scenarios.go`). The default, `baseline,mixed`, runs the worst case for the pod handler
+(every policy in one namespace, so every pod event is checked against all of them) and then the shape that covers the
+namespace, service, ANP and CNP handlers. The individual `NPC_SCALE_*` variables below override every preset.
 
 | Scenario | Shape |
 |---|---|
@@ -44,7 +49,7 @@ build with the startup stall takes over a minute even when it does not restart.
 | `anp` | every policy is an ApplicationNetworkPolicy |
 | `cnp` | adds 50 ClusterNetworkPolicies |
 | `ipblock` | every policy has 50 ipBlock egress peers |
-| `mixed` (default) | all of the above at lower ratios |
+| `mixed` | all of the above at lower ratios |
 
 The test uses the controller deployment that is already in the cluster. It must be able to win the leader lease,
 so disable the EKS control plane controller (`enable-network-policy-controller: "false"` in the `amazon-vpc-cni`
@@ -58,7 +63,7 @@ make run-startup-scale-test
 
 | Variable | Default | Description |
 |---|---|---|
-| `NPC_SCALE_SCENARIO` | `mixed` | workload preset, see above |
+| `NPC_SCALE_SCENARIOS` | `baseline,mixed` | comma-separated workload presets to run, see above |
 | `NPC_SCALE_PODS` | `10000` | kwok pods to create |
 | `NPC_SCALE_POLICIES` | `10000` | NetworkPolicies and ApplicationNetworkPolicies to create |
 | `NPC_SCALE_APP_LABELS` | `50` | distinct `app` labels per namespace shared by pods and policy selectors |
@@ -74,6 +79,7 @@ make run-startup-scale-test
 | `NPC_SCALE_KEEP_RESOURCES` | `false` | skip deleting the namespace and kwok nodes afterwards |
 | `NPC_SCALE_CREATE_CONCURRENCY` | `64` | parallel create requests |
 | `NPC_STARTUP_TIMEOUT` | `20m` | how long the controller has to reconcile every policy after the lease is released |
+| `NPC_STARTUP_BARRIER_TIMEOUT` | `15s` | how long the leader may take from acquiring the lease to starting the policy controller workers; must be below 2m |
 | `NPC_FIRST_RECONCILE_TIMEOUT` | `30s` | how long the leader may hold the lease before creating its first PolicyEndpoint; must be below 2m |
 | `NPC_CACHE_WARMUP` | `1m` | how long the controller pods sync caches before the lease is released |
 | `NPC_NAMESPACE` / `NPC_DEPLOYMENT` | `kube-system` / `amazon-network-policy-controller-k8s` | controller deployment |

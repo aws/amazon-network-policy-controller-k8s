@@ -152,7 +152,7 @@ jobs:
       id-token: write
       contents: read
     runs-on: ubuntu-24.04
-    # cyclonus runs ~3h, cluster setup ~30m and the startup scale test (IPv4 only) up to ~1h.
+    # cyclonus runs ~3h, cluster setup ~30m and the startup scale test (IPv4 only, two scenarios) ~70m.
     # Cap below the 6h credential/GitHub job limit.
     timeout-minutes: 330
     strategy:

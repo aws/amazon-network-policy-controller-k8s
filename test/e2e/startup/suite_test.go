@@ -19,6 +19,7 @@ limitations under the License.
 package startup
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
@@ -49,6 +50,7 @@ type testConfig struct {
 	controllerNS          string
 	controllerName        string
 	startupTimeout        time.Duration
+	startupBarrierTimeout time.Duration
 	firstReconcileTimeout time.Duration
 	cacheWarmup           time.Duration
 	keepResources         bool
@@ -64,7 +66,22 @@ const cacheSyncTimeout = 2 * time.Minute
 var (
 	cfg       testConfig
 	k8sClient client.Client
+	// startupScenarios are the workload presets the suite runs, in order. They are read when the spec tree is
+	// built, which is before BeforeSuite loads the rest of the configuration. baseline puts every policy in one
+	// namespace, which maximizes the policies each pod event is checked against and so the cost of a pod
+	// handler regression; mixed exercises the namespace, service, ANP and CNP handlers that baseline does not.
+	startupScenarios = splitList(envOrDefault("NPC_SCALE_SCENARIOS", "baseline,mixed"))
 )
+
+func splitList(s string) []string {
+	var items []string
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
 
 func TestStartupScale(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -73,6 +90,9 @@ func TestStartupScale(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	cfg = loadTestConfig()
+	for _, name := range startupScenarios {
+		_ = workloadFor(name)
+	}
 
 	scheme := runtime.NewScheme()
 	Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
@@ -86,6 +106,18 @@ var _ = BeforeSuite(func() {
 
 	k8sClient, err = client.New(restCFG, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred())
+
+	if !cfg.skipKwokInstall {
+		ctx := context.Background()
+		preinstalled := kwokInstalled(ctx)
+		By("installing kwok " + cfg.kwokVersion)
+		Expect(installKwok(cfg.kwokVersion)).To(Succeed())
+		if cfg.uninstallKwok && !preinstalled {
+			DeferCleanup(func() {
+				Expect(uninstallKwok(cfg.kwokVersion)).To(Succeed())
+			})
+		}
+	}
 })
 
 func loadTestConfig() testConfig {
@@ -96,10 +128,10 @@ func loadTestConfig() testConfig {
 		policies:              envIntOrDefault("NPC_SCALE_POLICIES", 10000),
 		appLabels:             envIntOrDefault("NPC_SCALE_APP_LABELS", 50),
 		namespace:             envOrDefault("NPC_SCALE_NAMESPACE", "npc-startup-scale"),
-		scenario:              envOrDefault("NPC_SCALE_SCENARIO", "mixed"),
 		controllerNS:          envOrDefault("NPC_NAMESPACE", "kube-system"),
 		controllerName:        envOrDefault("NPC_DEPLOYMENT", "amazon-network-policy-controller-k8s"),
 		startupTimeout:        envDurationOrDefault("NPC_STARTUP_TIMEOUT", 20*time.Minute),
+		startupBarrierTimeout: envDurationOrDefault("NPC_STARTUP_BARRIER_TIMEOUT", 15*time.Second),
 		firstReconcileTimeout: envDurationOrDefault("NPC_FIRST_RECONCILE_TIMEOUT", 30*time.Second),
 		cacheWarmup:           envDurationOrDefault("NPC_CACHE_WARMUP", time.Minute),
 		keepResources:         envBool("NPC_SCALE_KEEP_RESOURCES"),
@@ -108,9 +140,25 @@ func loadTestConfig() testConfig {
 		createConcurrency:     envIntOrDefault("NPC_SCALE_CREATE_CONCURRENCY", 64),
 	}
 
-	w, ok := scenarios[c.scenario]
-	Expect(ok).To(BeTrue(), "unknown NPC_SCALE_SCENARIO %q, expected one of %s",
-		c.scenario, strings.Join(scenarioNames(), ", "))
+	Expect(c.appLabels).To(BeNumerically(">", 0), "NPC_SCALE_APP_LABELS must be positive")
+	// A stall longer than CacheSyncTimeout restarts the pod, so a bound at or above it can never fail.
+	Expect(c.startupBarrierTimeout).To(BeNumerically("<", cacheSyncTimeout),
+		"NPC_STARTUP_BARRIER_TIMEOUT must be below the controller's CacheSyncTimeout (%s) to detect a startup stall",
+		cacheSyncTimeout)
+	Expect(c.firstReconcileTimeout).To(BeNumerically("<", cacheSyncTimeout),
+		"NPC_FIRST_RECONCILE_TIMEOUT must be below the controller's CacheSyncTimeout (%s) to detect a startup stall",
+		cacheSyncTimeout)
+	// kwok assigns pod IPs from the node's /22.
+	Expect(c.kwokNodes*kwokPodsPerNode).To(BeNumerically(">=", c.pods),
+		"%d kwok nodes hold at most %d pods, raise NPC_SCALE_KWOK_NODES", c.kwokNodes, c.kwokNodes*kwokPodsPerNode)
+	return c
+}
+
+// workloadFor returns the preset of the named scenario with the NPC_SCALE_* overrides applied.
+func workloadFor(name string) workload {
+	w, ok := scenarios[name]
+	Expect(ok).To(BeTrue(), "unknown scenario %q in NPC_SCALE_SCENARIOS, expected one of %s",
+		name, strings.Join(scenarioNames(), ", "))
 	w.namespaces = envIntOrDefault("NPC_SCALE_NAMESPACES", w.namespaces)
 	w.namespaceGroups = envIntOrDefault("NPC_SCALE_NAMESPACE_GROUPS", w.namespaceGroups)
 	w.nsSelectorPercent = envIntOrDefault("NPC_SCALE_NS_SELECTOR_PERCENT", w.nsSelectorPercent)
@@ -119,19 +167,9 @@ func loadTestConfig() testConfig {
 	w.anpPercent = envIntOrDefault("NPC_SCALE_ANP_PERCENT", w.anpPercent)
 	w.cnps = envIntOrDefault("NPC_SCALE_CNPS", w.cnps)
 	w.ipBlocksPerPolicy = envIntOrDefault("NPC_SCALE_IPBLOCKS_PER_POLICY", w.ipBlocksPerPolicy)
-	c.workload = w
-
 	Expect(w.namespaces).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACES must be positive")
 	Expect(w.namespaceGroups).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACE_GROUPS must be positive")
-	Expect(c.appLabels).To(BeNumerically(">", 0), "NPC_SCALE_APP_LABELS must be positive")
-	// A stall longer than CacheSyncTimeout restarts the pod, so a bound at or above it can never fail.
-	Expect(c.firstReconcileTimeout).To(BeNumerically("<", cacheSyncTimeout),
-		"NPC_FIRST_RECONCILE_TIMEOUT must be below the controller's CacheSyncTimeout (%s) to detect a startup stall",
-		cacheSyncTimeout)
-	// kwok assigns pod IPs from the node's /22.
-	Expect(c.kwokNodes*kwokPodsPerNode).To(BeNumerically(">=", c.pods),
-		"%d kwok nodes hold at most %d pods, raise NPC_SCALE_KWOK_NODES", c.kwokNodes, c.kwokNodes*kwokPodsPerNode)
-	return c
+	return w
 }
 
 func envOrDefault(key, def string) string {
