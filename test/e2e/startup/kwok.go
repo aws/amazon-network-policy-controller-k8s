@@ -41,6 +41,8 @@ const (
 	kwokNodeTypeValue  = "kwok"
 	// scaleTestLabel marks every object created by this test so that cleanup only touches our objects.
 	scaleTestLabel = "networking.k8s.aws/npc-startup-scale-test"
+	// kwokPodsPerNode is how many pods fit in a kwok node's /22 pod CIDR, with headroom.
+	kwokPodsPerNode = 1000
 )
 
 func kwokManifestURLs(version string) []string {
@@ -62,6 +64,11 @@ func kubectl(args ...string) error {
 
 func kubectlOutput(args ...string) (string, error) {
 	GinkgoWriter.Printf("kubectl %s\n", strings.Join(args, " "))
+	return kubectlQuiet(args...)
+}
+
+// kubectlQuiet runs kubectl without logging the command, for calls made on every poll.
+func kubectlQuiet(args ...string) (string, error) {
 	out, err := exec.Command("kubectl", args...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("kubectl %s: %w", strings.Join(args, " "), err)

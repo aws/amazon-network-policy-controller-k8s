@@ -34,7 +34,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -60,8 +59,10 @@ const (
 // wins the lease before the policy cache fills, which makes the pod pass cheap, so the spec holds the leader
 // lease itself while the controller pods start and sync their caches, then releases it.
 //
-// The spec passes only when the controller starts without restarting and produces PolicyEndpoints for every
-// policy within NPC_STARTUP_TIMEOUT of the lease being released.
+// The spec passes only when the controller starts without restarting, creates its first PolicyEndpoint within
+// NPC_FIRST_RECONCILE_TIMEOUT of becoming leader, and produces endpoints for every policy within
+// NPC_STARTUP_TIMEOUT of the lease being released. The first bound catches a leader that is stuck behind the
+// startup barrier but has not yet hit CacheSyncTimeout, the second catches reconciliation that is too slow.
 var _ = Describe("controller startup at scale", Ordered, func() {
 	var (
 		ctx              = context.Background()
@@ -69,8 +70,8 @@ var _ = Describe("controller startup at scale", Ordered, func() {
 	)
 
 	BeforeAll(func() {
-		By(fmt.Sprintf("using pods=%d policies=%d kwokNodes=%d namespace=%s",
-			cfg.pods, cfg.policies, cfg.kwokNodes, cfg.namespace))
+		By(fmt.Sprintf("using scenario=%s pods=%d policies=%d kwokNodes=%d namespace=%s %s",
+			cfg.scenario, cfg.pods, cfg.policies, cfg.kwokNodes, cfg.namespace, cfg.workload))
 
 		if !cfg.skipKwokInstall {
 			preinstalled := kwokInstalled(ctx)
@@ -120,25 +121,14 @@ var _ = Describe("controller startup at scale", Ordered, func() {
 		Eventually(readyKwokNodes).WithContext(ctx).WithTimeout(3 * time.Minute).WithPolling(pollInterval).
 			Should(Equal(cfg.kwokNodes))
 
-		By("creating namespace " + cfg.namespace)
 		DeferCleanup(func() {
 			if cfg.keepResources {
 				return
 			}
-			deleteTestNamespace(ctx)
+			deleteTestResources(ctx)
 		})
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-			Name:   cfg.namespace,
-			Labels: map[string]string{scaleTestLabel: "true"},
-		}}
-		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
-
-		By(fmt.Sprintf("creating %d network policies", cfg.policies))
-		Expect(createConcurrently(cfg.policies, func(i int) client.Object { return newNetworkPolicy(i) })).To(Succeed())
-
-		By(fmt.Sprintf("creating %d kwok pods", cfg.pods))
-		Expect(createConcurrently(cfg.pods, func(i int) client.Object { return newKwokPod(i) })).To(Succeed())
-		Eventually(runningPodsWithIP).WithContext(ctx).WithTimeout(15 * time.Minute).WithPolling(10 * time.Second).
+		createWorkload(ctx)
+		Eventually(runningPodsWithIP).WithContext(ctx).WithTimeout(20 * time.Minute).WithPolling(10 * time.Second).
 			Should(Equal(cfg.pods))
 	})
 
@@ -168,12 +158,16 @@ var _ = Describe("controller startup at scale", Ordered, func() {
 		startTime := time.Now()
 
 		var (
+			expected         = cfg.workload.expectedPolicies()
+			leader           string
 			leaderAcquired   time.Duration
 			firstReconciled  time.Duration
 			allReconciled    time.Duration
 			reconciledCount  int
 			restartedPod     *corev1.Pod
 			restartedMessage string
+			idleFailure      string
+			peak             controllerMetrics
 		)
 		deadline := startTime.Add(cfg.startupTimeout)
 		for time.Now().Before(deadline) {
@@ -191,9 +185,11 @@ var _ = Describe("controller startup at scale", Ordered, func() {
 				break
 			}
 
-			if leaderAcquired == 0 && leaderIsNewPod(ctx, pods) {
-				leaderAcquired = elapsed
-				GinkgoWriter.Printf("[%s] leader lease acquired by a new controller pod\n", elapsed)
+			if leaderAcquired == 0 {
+				if leader = newPodLeader(ctx, pods); leader != "" {
+					leaderAcquired = elapsed
+					GinkgoWriter.Printf("[%s] leader lease acquired by new controller pod %s\n", elapsed, leader)
+				}
 			}
 
 			reconciledCount, err = reconciledPolicies(ctx)
@@ -202,21 +198,49 @@ var _ = Describe("controller startup at scale", Ordered, func() {
 				firstReconciled = elapsed
 				GinkgoWriter.Printf("[%s] first PolicyEndpoint created\n", elapsed)
 			}
-			GinkgoWriter.Printf("[%s] %d/%d policies have PolicyEndpoints\n", elapsed, reconciledCount, cfg.policies)
-			if reconciledCount == cfg.policies {
+
+			progress := fmt.Sprintf("[%s] %d/%d policies have endpoints", elapsed, reconciledCount, expected)
+			if leader != "" {
+				if m, err := scrapeControllerMetrics(leader); err == nil {
+					peak.residentBytes = max(peak.residentBytes, m.residentBytes)
+					peak.heapInUseBytes = max(peak.heapInUseBytes, m.heapInUseBytes)
+					peak.queueDepth = max(peak.queueDepth, m.queueDepth)
+					progress += fmt.Sprintf(" reconciles=%.0f errors=%.0f queueDepth=%.0f activeWorkers=%.0f rss=%s",
+						m.reconciles, m.reconcileErrors, m.queueDepth, m.activeWorkers, mebibytes(m.residentBytes))
+				} else {
+					progress += fmt.Sprintf(" (metrics unavailable: %v)", err)
+				}
+			}
+			GinkgoWriter.Println(progress)
+
+			if reconciledCount == expected {
 				allReconciled = elapsed
 				break
+			}
+			if firstReconciled == 0 {
+				if leaderAcquired == 0 && elapsed > cfg.firstReconcileTimeout {
+					idleFailure = fmt.Sprintf("no new controller pod acquired the leader lease within %s of it being released",
+						cfg.firstReconcileTimeout)
+					break
+				}
+				if leaderAcquired > 0 && elapsed-leaderAcquired > cfg.firstReconcileTimeout {
+					idleFailure = fmt.Sprintf("leader %s held the lease for %s without creating a PolicyEndpoint",
+						leader, cfg.firstReconcileTimeout)
+					break
+				}
 			}
 			time.Sleep(pollInterval)
 		}
 
 		// Timings are relative to the lease being released.
 		AddReportEntry("startup timings", fmt.Sprintf(
-			"leaderAcquired=%s firstPolicyEndpoint=%s allPolicyEndpoints=%s reconciled=%d/%d",
-			leaderAcquired, firstReconciled, allReconciled, reconciledCount, cfg.policies))
+			"scenario=%s leaderAcquired=%s firstPolicyEndpoint=%s allPolicyEndpoints=%s reconciled=%d/%d",
+			cfg.scenario, leaderAcquired, firstReconciled, allReconciled, reconciledCount, expected))
 		if leaderAcquired > 0 && firstReconciled > 0 {
 			AddReportEntry("leader idle period", (firstReconciled - leaderAcquired).String())
 		}
+		AddReportEntry("leader peak usage", fmt.Sprintf("rss=%s heapInUse=%s queueDepth=%.0f",
+			mebibytes(peak.residentBytes), mebibytes(peak.heapInUseBytes), peak.queueDepth))
 
 		if restartedPod != nil {
 			logs := previousLogs(restartedPod.Name)
@@ -224,8 +248,11 @@ var _ = Describe("controller startup at scale", Ordered, func() {
 			Fail(fmt.Sprintf("controller pod %s restarted during startup (%s)\n%s",
 				restartedPod.Name, restartedMessage, logs))
 		}
-		Expect(reconciledCount).To(Equal(cfg.policies),
-			"controller did not create PolicyEndpoints for all policies within %s", cfg.startupTimeout)
+		if idleFailure != "" {
+			Fail(idleFailure)
+		}
+		Expect(reconciledCount).To(Equal(expected),
+			"controller did not create endpoints for all policies within %s", cfg.startupTimeout)
 	})
 })
 
@@ -399,31 +426,57 @@ func previousLogs(podName string) string {
 	return out
 }
 
-func leaderIsNewPod(ctx context.Context, pods []corev1.Pod) bool {
+// newPodLeader returns the name of the pod in pods that holds the leader lease, or "" if none does.
+// controller-runtime sets the holder identity to <hostname>_<uuid>, and a pod's hostname is its name.
+func newPodLeader(ctx context.Context, pods []corev1.Pod) string {
 	lease := &coordinationv1.Lease{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cfg.controllerNS, Name: leaderElectionID}, lease); err != nil {
-		return false
+		return ""
 	}
-	holder := ptr.Deref(lease.Spec.HolderIdentity, "")
+	holder, _, _ := strings.Cut(ptr.Deref(lease.Spec.HolderIdentity, ""), "_")
 	for _, pod := range pods {
-		if strings.HasPrefix(holder, pod.Name) {
-			return true
+		if holder == pod.Name {
+			return pod.Name
 		}
 	}
-	return false
+	return ""
 }
 
-// reconciledPolicies returns the number of distinct network policies in the test namespace that have PolicyEndpoints.
+// reconciledPolicies returns the number of test policies, of any kind, that have at least one PolicyEndpoint or
+// ClusterPolicyEndpoint. Endpoints are counted by their controller owner reference, using metadata-only lists so
+// polling stays cheap when there are thousands of large endpoint objects.
 func reconciledPolicies(ctx context.Context) (int, error) {
-	peList := &policyinfo.PolicyEndpointList{}
-	if err := k8sClient.List(ctx, peList, client.InNamespace(cfg.namespace)); err != nil {
+	owners := make(map[types.UID]struct{})
+
+	pes := &metav1.PartialObjectMetadataList{}
+	pes.SetGroupVersionKind(policyinfo.GroupVersion.WithKind("PolicyEndpointList"))
+	if err := k8sClient.List(ctx, pes); err != nil {
 		return 0, err
 	}
-	policies := make(map[string]struct{}, len(peList.Items))
-	for _, pe := range peList.Items {
-		policies[pe.Spec.PolicyRef.Name] = struct{}{}
+	for _, pe := range pes.Items {
+		if !isTestNamespace(pe.Namespace) {
+			continue
+		}
+		for _, ref := range pe.OwnerReferences {
+			owners[ref.UID] = struct{}{}
+		}
 	}
-	return len(policies), nil
+
+	if cfg.workload.cnps > 0 {
+		cpes := &metav1.PartialObjectMetadataList{}
+		cpes.SetGroupVersionKind(policyinfo.GroupVersion.WithKind("ClusterPolicyEndpointList"))
+		if err := k8sClient.List(ctx, cpes); err != nil {
+			return 0, err
+		}
+		for _, cpe := range cpes.Items {
+			for _, ref := range cpe.OwnerReferences {
+				if strings.HasPrefix(ref.Name, cnpNamePrefix) {
+					owners[ref.UID] = struct{}{}
+				}
+			}
+		}
+	}
+	return len(owners), nil
 }
 
 func readyKwokNodes(ctx context.Context) (int, error) {
@@ -444,12 +497,12 @@ func readyKwokNodes(ctx context.Context) (int, error) {
 
 func runningPodsWithIP(ctx context.Context) (int, error) {
 	pods := &corev1.PodList{}
-	if err := k8sClient.List(ctx, pods, client.InNamespace(cfg.namespace)); err != nil {
+	if err := k8sClient.List(ctx, pods, client.MatchingLabels{scaleTestLabel: "true"}); err != nil {
 		return 0, err
 	}
 	running := 0
 	for _, pod := range pods.Items {
-		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+		if isTestNamespace(pod.Namespace) && pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
 			running++
 		}
 	}
@@ -457,77 +510,49 @@ func runningPodsWithIP(ctx context.Context) (int, error) {
 	return running, nil
 }
 
-func appLabel(i int) string {
-	return fmt.Sprintf("app-%d", i%cfg.appLabels)
+// createWorkload creates the namespaces, services, policies, and pods described by cfg.workload. Policies are
+// created before pods so the controller's policy cache is populated when the pod events are replayed.
+func createWorkload(ctx context.Context) {
+	w := cfg.workload
+
+	By(fmt.Sprintf("creating %d namespaces", w.namespaces))
+	Expect(createConcurrently(w.namespaces, func(i int) client.Object { return newTestNamespace(i) })).To(Succeed())
+
+	if n := w.namespaces * w.servicesPerNamespace; n > 0 {
+		By(fmt.Sprintf("creating %d services", n))
+		Expect(createConcurrently(n, func(i int) client.Object {
+			return newService(i%w.namespaces, i/w.namespaces)
+		})).To(Succeed())
+	}
+
+	By(fmt.Sprintf("creating %d policies (%d%% ApplicationNetworkPolicies)", cfg.policies, w.anpPercent))
+	Expect(createConcurrently(cfg.policies, newPolicy)).To(Succeed())
+
+	if w.broadPolicies > 0 {
+		By(fmt.Sprintf("creating %d broad policies", w.broadPolicies))
+		Expect(createConcurrently(w.broadPolicies, func(i int) client.Object { return newBroadPolicy(i) })).To(Succeed())
+	}
+
+	if w.cnps > 0 {
+		By(fmt.Sprintf("creating %d ClusterNetworkPolicies", w.cnps))
+		Expect(createConcurrently(w.cnps, func(i int) client.Object { return newClusterNetworkPolicy(i) })).To(Succeed())
+	}
+
+	By(fmt.Sprintf("creating %d kwok pods", cfg.pods))
+	Expect(createConcurrently(cfg.pods, func(i int) client.Object { return newKwokPod(i) })).To(Succeed())
 }
 
-func newKwokPod(i int) *corev1.Pod {
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("scale-pod-%d", i),
-			Namespace: cfg.namespace,
-			Labels: map[string]string{
-				appLabelKey:    appLabel(i),
-				scaleTestLabel: "true",
-			},
-		},
-		Spec: corev1.PodSpec{
-			// Binding directly to the kwok node skips the scheduler, which keeps pod creation fast.
-			NodeName: kwokNodeName(i % cfg.kwokNodes),
-			Tolerations: []corev1.Toleration{{
-				Key:      kwokTaintKey,
-				Operator: corev1.TolerationOpExists,
-				Effect:   corev1.TaintEffectNoSchedule,
-			}},
-			Containers: []corev1.Container{{
-				Name:  "app",
-				Image: "registry.k8s.io/pause:3.10",
-				Ports: []corev1.ContainerPort{{ContainerPort: 8080, Protocol: corev1.ProtocolTCP}},
-			}},
-		},
-	}
-}
-
-// newNetworkPolicy builds policy i. Policies select pods by app label and allow traffic to and from
-// neighbouring app labels, so every pod is both selected by and referenced from several policies. Every
-// tenth policy uses a namespaceSelector peer, which makes the controller track it as a namespace reference
-// and evaluate it for every pod event in any namespace.
-func newNetworkPolicy(i int) *networking.NetworkPolicy {
-	port := intstr.FromInt32(int32(8000 + i%1000))
-	ingressPeer := networking.NetworkPolicyPeer{
-		PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{appLabelKey: appLabel(i + 1)}},
-	}
-	if i%10 == 0 {
-		ingressPeer.NamespaceSelector = &metav1.LabelSelector{
-			MatchLabels: map[string]string{"kubernetes.io/metadata.name": cfg.namespace},
-		}
-	}
-	return &networking.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("scale-policy-%d", i),
-			Namespace: cfg.namespace,
-			Labels:    map[string]string{scaleTestLabel: "true"},
-		},
-		Spec: networking.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{appLabelKey: appLabel(i)}},
-			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress, networking.PolicyTypeEgress},
-			Ingress: []networking.NetworkPolicyIngressRule{{
-				From:  []networking.NetworkPolicyPeer{ingressPeer},
-				Ports: []networking.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: &port}},
-			}},
-			Egress: []networking.NetworkPolicyEgressRule{{
-				To: []networking.NetworkPolicyPeer{{
-					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{appLabelKey: appLabel(i + 2)}},
-				}},
-				Ports: []networking.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: &port}},
-			}},
-		},
-	}
-}
-
-// createConcurrently creates n objects built by newObj using cfg.createConcurrency workers. Objects that
-// already exist are left alone so an interrupted run can be resumed with NPC_SCALE_KEEP_RESOURCES.
+// createConcurrently creates n objects built by newObj. Objects that already exist are left alone so an
+// interrupted run can be resumed with NPC_SCALE_KEEP_RESOURCES.
 func createConcurrently(n int, newObj func(i int) client.Object) error {
+	return forEachConcurrently(n, func(ctx context.Context, i int) error {
+		return client.IgnoreAlreadyExists(k8sClient.Create(ctx, newObj(i)))
+	})
+}
+
+// forEachConcurrently calls fn for every index below n using cfg.createConcurrency workers, and stops at the
+// first error.
+func forEachConcurrently(n int, fn func(ctx context.Context, i int) error) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	indexes := make(chan int)
@@ -542,7 +567,7 @@ func createConcurrently(n int, newObj func(i int) client.Object) error {
 			defer GinkgoRecover()
 			defer wg.Done()
 			for i := range indexes {
-				if err := client.IgnoreAlreadyExists(k8sClient.Create(ctx, newObj(i))); err != nil {
+				if err := fn(ctx, i); err != nil {
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = err
@@ -561,35 +586,57 @@ func createConcurrently(n int, newObj func(i int) client.Object) error {
 	return firstErr
 }
 
-// deleteTestNamespace deletes the test namespace. The controller adds finalizers to network policies, so if it
-// is not healthy enough to remove them the finalizers are stripped to let the namespace go away.
-func deleteTestNamespace(ctx context.Context) {
-	By("deleting namespace " + cfg.namespace)
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.namespace}}
-	Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, ns))).To(Succeed())
+// deleteTestResources deletes the ClusterNetworkPolicies and namespaces created by the test. The controller adds
+// finalizers to every policy and removes them at its client QPS, which takes many minutes for thousands of
+// policies, so the finalizers are stripped straight away. Namespace deletion then garbage collects the
+// PolicyEndpoints, and ClusterPolicyEndpoints are collected through their owner references.
+func deleteTestResources(ctx context.Context) {
+	By("deleting test ClusterNetworkPolicies and namespaces")
+	Expect(client.IgnoreNotFound(k8sClient.DeleteAllOf(ctx, &policyinfo.ClusterNetworkPolicy{},
+		client.MatchingLabels{scaleTestLabel: "true"}))).To(Succeed())
+	names := testNamespaceNames()
+	Expect(forEachConcurrently(len(names), func(ctx context.Context, i int) error {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: names[i]}}
+		return client.IgnoreNotFound(k8sClient.Delete(ctx, ns))
+	})).To(Succeed())
 
-	namespaceGone := func(ctx context.Context) bool {
-		return apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(ns), &corev1.Namespace{}))
+	By("removing finalizers from test policies")
+	var policies []client.Object
+	nps := &networking.NetworkPolicyList{}
+	Expect(k8sClient.List(ctx, nps, client.MatchingLabels{scaleTestLabel: "true"})).To(Succeed())
+	for i := range nps.Items {
+		policies = append(policies, &nps.Items[i])
 	}
-	deadline := time.Now().Add(5 * time.Minute)
-	for time.Now().Before(deadline) && !namespaceGone(ctx) {
-		time.Sleep(pollInterval)
+	anps := &policyinfo.ApplicationNetworkPolicyList{}
+	Expect(client.IgnoreNotFound(k8sClient.List(ctx, anps, client.MatchingLabels{scaleTestLabel: "true"}))).To(Succeed())
+	for i := range anps.Items {
+		policies = append(policies, &anps.Items[i])
 	}
-	if namespaceGone(ctx) {
-		return
+	cnps := &policyinfo.ClusterNetworkPolicyList{}
+	Expect(client.IgnoreNotFound(k8sClient.List(ctx, cnps, client.MatchingLabels{scaleTestLabel: "true"}))).To(Succeed())
+	for i := range cnps.Items {
+		policies = append(policies, &cnps.Items[i])
 	}
-
-	By("removing finalizers from network policies left in " + cfg.namespace)
-	policies := &networking.NetworkPolicyList{}
-	Expect(k8sClient.List(ctx, policies, client.InNamespace(cfg.namespace))).To(Succeed())
-	for i := range policies.Items {
-		policy := &policies.Items[i]
-		if len(policy.Finalizers) == 0 {
-			continue
+	Expect(forEachConcurrently(len(policies), func(ctx context.Context, i int) error {
+		policy := policies[i]
+		if len(policy.GetFinalizers()) == 0 {
+			return nil
 		}
-		patch := client.MergeFrom(policy.DeepCopy())
-		policy.Finalizers = nil
-		Expect(client.IgnoreNotFound(k8sClient.Patch(ctx, policy, patch))).To(Succeed())
-	}
-	Eventually(namespaceGone).WithContext(ctx).WithTimeout(10 * time.Minute).WithPolling(pollInterval).Should(BeTrue())
+		patch := client.MergeFrom(policy.DeepCopyObject().(client.Object))
+		policy.SetFinalizers(nil)
+		return client.IgnoreNotFound(k8sClient.Patch(ctx, policy, patch))
+	})).To(Succeed())
+
+	Eventually(func(ctx context.Context) (int, error) {
+		remaining := 0
+		for _, name := range names {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &corev1.Namespace{})
+			if err == nil {
+				remaining++
+			} else if !apierrors.IsNotFound(err) {
+				return 0, err
+			}
+		}
+		return remaining, nil
+	}).WithContext(ctx).WithTimeout(15 * time.Minute).WithPolling(10 * time.Second).Should(BeZero())
 }
