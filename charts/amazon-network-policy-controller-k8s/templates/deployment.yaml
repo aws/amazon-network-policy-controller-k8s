@@ -33,6 +33,12 @@ spec:
           {{- if .Values.podUpdateBatchPeriodDuration }}
           - --pod-update-batch-period-duration={{ .Values.updateBatchPeriodDuration }}
           {{- end }}
+          {{- if .Values.kubeAPIQPS }}
+          - --kube-api-qps={{ .Values.kubeAPIQPS }}
+          {{- end }}
+          {{- if .Values.kubeAPIBurst }}
+          - --kube-api-burst={{ .Values.kubeAPIBurst }}
+          {{- end }}
         {{- with .Values.livenessProbe }}
         livenessProbe:
           {{- toYaml . | nindent 10 }}
