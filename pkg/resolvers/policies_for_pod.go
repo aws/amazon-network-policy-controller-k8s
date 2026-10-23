@@ -17,7 +17,7 @@ import (
 
 func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.Context, pod *corev1.Pod, podOld *corev1.Pod) ([]networking.NetworkPolicy, error) {
 	policyList := &networking.NetworkPolicyList{}
-	if err := r.k8sClient.List(ctx, policyList, client.InNamespace(pod.Namespace)); err != nil {
+	if err := r.k8sClient.List(ctx, policyList, client.InNamespace(pod.Namespace), client.UnsafeDisableDeepCopy); err != nil {
 		return nil, errors.Wrap(err, "failed to fetch policies")
 	}
 	processedPolicies := sets.Set[types.NamespacedName]{}
@@ -47,7 +47,7 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 			continue
 		}
 		policy := &networking.NetworkPolicy{}
-		if err := r.k8sClient.Get(ctx, ref, policy); err != nil {
+		if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return nil, errors.Wrap(err, "failed to get policy")
 			}
@@ -109,7 +109,7 @@ func (r *defaultPolicyReferenceResolver) isPodReferredOnIngressEgress(ctx contex
 func (r *defaultPolicyReferenceResolver) isPodLabelMatchPeer(ctx context.Context, pod *corev1.Pod, peer *networking.NetworkPolicyPeer, policyNamespace string) bool {
 	if peer.NamespaceSelector != nil {
 		ns := &corev1.Namespace{}
-		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: pod.Namespace}, ns); err != nil {
+		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: pod.Namespace}, ns, client.UnsafeDisableDeepCopy); err != nil {
 			r.logger.Info("Unable to get namespace", "ns", pod.Namespace, "err", err)
 			return false
 		}
@@ -144,7 +144,7 @@ func (r *defaultPolicyReferenceResolver) isPodLabelMatchPeer(ctx context.Context
 }
 func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesForPod(ctx context.Context, pod *corev1.Pod, podOld *corev1.Pod) ([]policyinfo.ApplicationNetworkPolicy, error) {
 	policyList := &policyinfo.ApplicationNetworkPolicyList{}
-	if err := r.k8sClient.List(ctx, policyList, client.InNamespace(pod.Namespace)); err != nil {
+	if err := r.k8sClient.List(ctx, policyList, client.InNamespace(pod.Namespace), client.UnsafeDisableDeepCopy); err != nil {
 		return nil, errors.Wrap(err, "failed to fetch ANP policies")
 	}
 	processedPolicies := sets.Set[types.NamespacedName]{}
@@ -179,7 +179,7 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 			continue
 		}
 		policy := &policyinfo.ApplicationNetworkPolicy{}
-		if err := r.k8sClient.Get(ctx, ref, policy); err != nil {
+		if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return nil, errors.Wrap(err, "failed to get ANP policy")
 			}
@@ -238,7 +238,7 @@ func (r *defaultPolicyReferenceResolver) isPodReferredOnANPIngressEgress(ctx con
 func (r *defaultPolicyReferenceResolver) isPodLabelMatchApplicationNetworkPolicyPeer(ctx context.Context, pod *corev1.Pod, peer *policyinfo.ApplicationNetworkPolicyPeer, policyNamespace string) bool {
 	if peer.NamespaceSelector != nil {
 		ns := &corev1.Namespace{}
-		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: pod.Namespace}, ns); err != nil {
+		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: pod.Namespace}, ns, client.UnsafeDisableDeepCopy); err != nil {
 			r.logger.Info("Unable to get namespace", "ns", pod.Namespace, "err", err)
 			return false
 		}
