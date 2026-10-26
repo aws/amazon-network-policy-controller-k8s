@@ -18,6 +18,8 @@ enableConfigMapCheck: true
 endpointChunkSize: ""
 maxConcurrentReconciles: ""
 podUpdateBatchPeriodDuration: ""
+kubeAPIQPS: ""
+kubeAPIBurst: ""
 
 securityContext:
   allowPrivilegeEscalation: false

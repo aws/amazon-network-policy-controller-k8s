@@ -30,6 +30,8 @@ The following table lists the configurable parameters for this chart and their d
 | endpointChunkSize            | Number of endpoints to include in a single policy endpoints resource | 1000                                             |
 | maxConcurrentReconciles      | Maximum number of concurrent reconcile loops                  | 3                                                       |
 | podUpdateBatchPeriodDuration | Duration between batch updates of pods in seconds             | 1                                                       |
+| kubeAPIQPS                   | Maximum queries per second to the Kubernetes API server       | 20                                                      |
+| kubeAPIBurst                 | Maximum burst of queries to the Kubernetes API server         | 100                                                     |
 | livenessProbe                | Liveness Probe configuration for controller                   | see `values.yaml`                                       |
 | readinessProbe               | Readiness Probe configuration for controller                  | see `values.yaml`                                       |
 
