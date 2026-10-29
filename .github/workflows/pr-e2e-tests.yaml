@@ -83,7 +83,7 @@ jobs:
             await github.rest.issues.createComment({
               ...context.repo,
               issue_number: context.issue.number,
-              body: `✅ e2e tests (cyclonus IPv4 + IPv6) triggered by @${context.actor} for \`${requestedSHA}\`. [View run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+              body: `✅ e2e tests (cyclonus IPv4 + IPv6, startup scale IPv4) triggered by @${context.actor} for \`${requestedSHA}\`. [View run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
             });
 
   build-image:
@@ -152,7 +152,8 @@ jobs:
       id-token: write
       contents: read
     runs-on: ubuntu-24.04
-    # cyclonus runs ~3h and cluster setup ~30m. Cap below the 6h credential/GitHub job limit.
+    # cyclonus runs ~3h, cluster setup ~30m and the startup scale test (IPv4 only, two scenarios) ~70m.
+    # Cap below the 6h credential/GitHub job limit.
     timeout-minutes: 330
     strategy:
       fail-fast: false
@@ -191,9 +192,13 @@ jobs:
         run: ./scripts/eks-test-cluster.sh create
 
       - name: Deploy controller on dataplane
+        id: deploy
         env:
           NP_CONTROLLER_IMAGE: ${{ needs.build-image.outputs.image-repository }}
           NP_CONTROLLER_TAG: ${{ needs.build-image.outputs.image-tag }}
+          # The startup scale test caches 10k PolicyEndpoints of ~600 endpoints each, which needs more than the
+          # chart's 1Gi default.
+          NP_CONTROLLER_MEMORY_LIMIT: 4Gi
         run: ./scripts/deploy-controller-on-dataplane.sh
 
       # The report job finds this step by name. No continue-on-error, so a failed suite fails the
@@ -204,7 +209,24 @@ jobs:
           DISABLE_CP_NETWORK_POLICY_CONTROLLER: "true"
         run: ./scripts/run-cyclonus-tests.sh
 
-  # Posts one comment per IP family. It reads the cyclonus step conclusion through the API, so the
+      # The startup scale test does not depend on the IP family, so it only runs on the IPv4 leg. It
+      # runs even if cyclonus failed, as an independent signal, but needs the deployed controller. It
+      # runs after cyclonus because it scales the controller to zero and holds its leader lease.
+      - uses: actions/setup-go@v5
+        if: always() && matrix.ip-family == 'IPv4' && steps.deploy.outcome == 'success'
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: "**/go.sum"
+
+      # The report job finds this step by name.
+      - name: Run startup scale test
+        if: always() && matrix.ip-family == 'IPv4' && steps.deploy.outcome == 'success'
+        env:
+          KWOK_UNINSTALL: "true"
+        run: make run-startup-scale-test
+
+  # Posts one comment per IP family. It reads the suite step conclusions through the API, so the
   # jobs that run PR code never hold a token that can write to issues or pull requests.
   report:
     needs: [check-trigger, build-image, e2e]
@@ -230,10 +252,15 @@ jobs:
               filter: 'latest',
             });
             const job = jobs.find(j => j.name === `e2e (${ipFamily})`);
-            const step = job?.steps?.find(s => s.name === 'Run cyclonus suite');
-            // A skipped or missing cyclonus step means an earlier step failed, which is a failure too.
-            const outcome = step?.conclusion ?? '';
-            const failed = outcome !== 'success';
+            // Suites that must pass on this leg. A skipped or missing step means an earlier step
+            // failed, which is a failure too.
+            const suites = { cyclonus: 'Run cyclonus suite' };
+            if (ipFamily === 'IPv4') suites['startup scale'] = 'Run startup scale test';
+            const outcomes = Object.entries(suites).map(([suite, stepName]) => {
+              const step = job?.steps?.find(s => s.name === stepName);
+              return [suite, step?.conclusion ?? ''];
+            });
+            const failed = outcomes.some(([, outcome]) => outcome !== 'success');
             const runUrl = job?.html_url ??
               `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.createComment({
@@ -244,7 +271,8 @@ jobs:
                 `- **Commit:** \`${{ needs.check-trigger.outputs.pr-sha }}\``,
                 `- **K8s Version:** ${{ needs.build-image.outputs.k8s-version }}`,
                 `- **Image:** \`${{ needs.build-image.outputs.image-repository }}:${{ needs.build-image.outputs.image-tag }}\``,
-                `- ${failed ? '❌' : '✅'} cyclonus (${outcome || 'not run'})`,
+                ...outcomes.map(([suite, outcome]) =>
+                  `- ${outcome === 'success' ? '✅' : '❌'} ${suite} (${outcome || 'not run'})`),
                 `- **[Full logs](${runUrl})**`
               ].join('\n')
             });

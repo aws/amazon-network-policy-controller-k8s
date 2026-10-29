@@ -6,6 +6,7 @@
 # NP_CONTROLLER_IMAGE: Custom network policy controller image repository
 # NP_CONTROLLER_TAG: Custom network policy controller image tag
 # NP_CONTROLLER_ENDPOINT_CHUNK_SIZE: The number of endpoints in policy endpoint resource
+# NP_CONTROLLER_MEMORY_LIMIT: Optional controller memory limit, defaults to the chart value
 
 set -e
 DIR=$(cd "$(dirname "$0")"; pwd)
@@ -25,6 +26,10 @@ fi
 
 if [[ ! -z $NP_CONTROLLER_ENDPOINT_CHUNK_SIZE ]]; then
     HELM_NPC_ARGS+=" --set endpointChunkSize=$NP_CONTROLLER_ENDPOINT_CHUNK_SIZE"
+fi
+
+if [[ ! -z $NP_CONTROLLER_MEMORY_LIMIT ]]; then
+    HELM_NPC_ARGS+=" --set resources.limits.memory=$NP_CONTROLLER_MEMORY_LIMIT"
 fi
 
 echo "Deploy the default Amazon Network Policy Controller on Dataplane"
