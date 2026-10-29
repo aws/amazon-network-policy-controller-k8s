@@ -23,6 +23,7 @@ import (
 // ClusterPolicyReference is the reference to the cluster network policy resource
 type ClusterPolicyReference struct {
 	// Name is the name of the ClusterNetworkPolicy
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 
