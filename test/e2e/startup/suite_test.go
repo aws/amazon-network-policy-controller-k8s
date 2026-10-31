@@ -140,9 +140,9 @@ func loadTestConfig() testConfig {
 		skipKwokInstall:       envBool("KWOK_SKIP_INSTALL"),
 		uninstallKwok:         envBool("KWOK_UNINSTALL"),
 		createConcurrency:     envIntOrDefault("NPC_SCALE_CREATE_CONCURRENCY", 64),
-		// Well below the 167 pods/s the tier-xl control plane schedules, since kwok also writes the status of every
-		// pod it starts.
-		podCreateRate: envIntOrDefault("NPC_SCALE_POD_CREATE_RATE", 100),
+		// Far below the 167 pods/s the tier-xl control plane schedules, since kwok also writes the status of every
+		// pod it starts. 10k pods take about 7 minutes.
+		podCreateRate: envIntOrDefault("NPC_SCALE_POD_CREATE_RATE", 25),
 	}
 
 	Expect(c.appLabels).To(BeNumerically(">", 0), "NPC_SCALE_APP_LABELS must be positive")

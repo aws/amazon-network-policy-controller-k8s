@@ -78,7 +78,7 @@ make run-startup-scale-test
 | `NPC_SCALE_IPBLOCKS_PER_POLICY` | preset | ipBlock egress peers per policy |
 | `NPC_SCALE_KEEP_RESOURCES` | `false` | skip deleting the namespace and kwok nodes afterwards |
 | `NPC_SCALE_CREATE_CONCURRENCY` | `64` | parallel create requests |
-| `NPC_SCALE_POD_CREATE_RATE` | `100` | kwok pods created per second, `0` for unlimited; keep it below the control plane's pod scheduling rate |
+| `NPC_SCALE_POD_CREATE_RATE` | `25` | kwok pods created per second, `0` for unlimited; keep it below the control plane's pod scheduling rate |
 | `NPC_STARTUP_TIMEOUT` | `20m` | how long the controller has to reconcile every policy after the lease is released |
 | `NPC_STARTUP_BARRIER_TIMEOUT` | `15s` | how long the leader may take from acquiring the lease to starting the policy controller workers; must be below 2m |
 | `NPC_FIRST_RECONCILE_TIMEOUT` | `30s` | how long the leader may hold the lease before creating its first PolicyEndpoint; must be below 2m |
