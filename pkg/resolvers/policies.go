@@ -11,6 +11,11 @@ import (
 )
 
 // PolicyReferenceResolver resolves the referred network policies for a given pod, namespace or service.
+//
+// It runs in the event handlers for every pod, namespace and service event, so it reads from the informer cache
+// with client.UnsafeDisableDeepCopy: the objects it reads and the policies it returns are shared with the cache.
+// They must be treated as read-only, by the resolver and by every caller; DeepCopy before mutating anything.
+// TestPolicyReferenceResolverDoesNotMutateCache enforces this.
 type PolicyReferenceResolver interface {
 	GetReferredPoliciesForPod(ctx context.Context, pod, podOld *corev1.Pod) ([]networking.NetworkPolicy, error)
 	GetReferredPoliciesForNamespace(ctx context.Context, ns, nsOld *corev1.Namespace) ([]networking.NetworkPolicy, error)
@@ -81,7 +86,7 @@ func (r *defaultPolicyReferenceResolver) GetReferredClusterPoliciesForPod(ctx co
 	// For CNP, any pod change could affect cluster policies, so return all CNPs
 	// this could be optimized to only return CNPs that actually select this pod
 	cnpList := &policyinfo.ClusterNetworkPolicyList{}
-	if err := r.k8sClient.List(ctx, cnpList); err != nil {
+	if err := r.k8sClient.List(ctx, cnpList, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, err
 	}
 	return cnpList.Items, nil
@@ -91,7 +96,7 @@ func (r *defaultPolicyReferenceResolver) GetReferredClusterPoliciesForPod(ctx co
 func (r *defaultPolicyReferenceResolver) GetReferredClusterPoliciesForNamespace(ctx context.Context, ns *corev1.Namespace, nsOld *corev1.Namespace) ([]policyinfo.ClusterNetworkPolicy, error) {
 	// For CNP, namespace changes could affect cluster policies, so return all CNPs
 	cnpList := &policyinfo.ClusterNetworkPolicyList{}
-	if err := r.k8sClient.List(ctx, cnpList); err != nil {
+	if err := r.k8sClient.List(ctx, cnpList, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, err
 	}
 	return cnpList.Items, nil
@@ -101,7 +106,7 @@ func (r *defaultPolicyReferenceResolver) GetReferredClusterPoliciesForNamespace(
 func (r *defaultPolicyReferenceResolver) GetReferredClusterPoliciesForService(ctx context.Context, svc *corev1.Service, svcOld *corev1.Service) ([]policyinfo.ClusterNetworkPolicy, error) {
 	// For CNP, service changes could affect cluster policies, so return all CNPs
 	cnpList := &policyinfo.ClusterNetworkPolicyList{}
-	if err := r.k8sClient.List(ctx, cnpList); err != nil {
+	if err := r.k8sClient.List(ctx, cnpList, client.UnsafeDisableDeepCopy); err != nil {
 		return nil, err
 	}
 	return cnpList.Items, nil
