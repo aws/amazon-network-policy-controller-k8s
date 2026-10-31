@@ -104,8 +104,9 @@ var _ = BeforeSuite(func() {
 	restCFG.QPS = 200
 	restCFG.Burst = 400
 
-	k8sClient, err = client.New(restCFG, client.Options{Scheme: scheme})
+	c, err := client.New(restCFG, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred())
+	k8sClient = retryingClient{Client: c}
 
 	if !cfg.skipKwokInstall {
 		ctx := context.Background()
