@@ -319,3 +319,31 @@ func Test_waitForCRDsEstablished_NotEstablished(t *testing.T) {
 	err := manager.waitForCRDsEstablished(ctx)
 	g.Expect(err).To(HaveOccurred())
 }
+
+func Test_policyRefNameIsRequiredWithMinLength(t *testing.T) {
+	crds, err := decodeCRDs()
+	NewWithT(t).Expect(err).ToNot(HaveOccurred())
+
+	for _, kind := range []string{"PolicyEndpoint", "ClusterPolicyEndpoint"} {
+		t.Run(kind, func(t *testing.T) {
+			g := NewWithT(t)
+
+			var spec *v1.JSONSchemaProps
+			for _, c := range crds {
+				if c.Spec.Names.Kind == kind {
+					s := c.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+					spec = &s
+				}
+			}
+			g.Expect(spec).ToNot(BeNil(), "no CRD found for %s", kind)
+			g.Expect(spec.Required).To(ContainElement("policyRef"))
+
+			policyRef := spec.Properties["policyRef"]
+			g.Expect(policyRef.Required).To(ContainElement("name"))
+
+			name := policyRef.Properties["name"]
+			g.Expect(name.MinLength).ToNot(BeNil(), "policyRef.name must set minLength")
+			g.Expect(*name.MinLength).To(Equal(int64(1)))
+		})
+	}
+}
