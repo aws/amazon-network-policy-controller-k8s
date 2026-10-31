@@ -27,6 +27,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"golang.org/x/time/rate"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -625,14 +626,31 @@ func createWorkload(ctx context.Context) {
 		Expect(createConcurrently(w.cnps, func(i int) client.Object { return newClusterNetworkPolicy(i) })).To(Succeed())
 	}
 
-	By(fmt.Sprintf("creating %d kwok pods", cfg.pods))
-	Expect(createConcurrently(cfg.pods, func(i int) client.Object { return newKwokPod(i) })).To(Succeed())
+	By(fmt.Sprintf("creating %d kwok pods at %d pods/s", cfg.pods, cfg.podCreateRate))
+	Expect(createConcurrentlyAtRate(cfg.pods, cfg.podCreateRate, func(i int) client.Object { return newKwokPod(i) })).
+		To(Succeed())
 }
 
 // createConcurrently creates n objects built by newObj. Objects that already exist are left alone so an
 // interrupted run can be resumed with NPC_SCALE_KEEP_RESOURCES.
 func createConcurrently(n int, newObj func(i int) client.Object) error {
 	return forEachConcurrently(n, func(ctx context.Context, i int) error {
+		return client.IgnoreAlreadyExists(k8sClient.Create(ctx, newObj(i)))
+	})
+}
+
+// createConcurrentlyAtRate is createConcurrently limited to perSecond creates per second, or unlimited when
+// perSecond is not positive. Creating pods faster than the control plane can absorb them, together with the status
+// kwok writes for every pod, makes etcd reject requests with "etcdserver: throttle: too many requests".
+func createConcurrentlyAtRate(n, perSecond int, newObj func(i int) client.Object) error {
+	if perSecond <= 0 {
+		return createConcurrently(n, newObj)
+	}
+	limiter := rate.NewLimiter(rate.Limit(perSecond), 1)
+	return forEachConcurrently(n, func(ctx context.Context, i int) error {
+		if err := limiter.Wait(ctx); err != nil {
+			return err
+		}
 		return client.IgnoreAlreadyExists(k8sClient.Create(ctx, newObj(i)))
 	})
 }
