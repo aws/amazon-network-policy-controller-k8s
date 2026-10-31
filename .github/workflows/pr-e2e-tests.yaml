@@ -164,6 +164,9 @@ jobs:
       CLUSTER_NAME: npc-e2e-pr-${{ github.event.issue.number }}-${{ github.run_id }}-${{ matrix.ip-family }}
       KUBECONFIG: ${{ github.workspace }}/.kube/config
       K8S_VERSION: ${{ needs.build-image.outputs.k8s-version }}
+      # The startup scale test (IPv4 only) creates and deletes tens of thousands of objects, which the standard
+      # control plane throttles with "etcdserver: throttle: too many requests" for minutes at a time.
+      CONTROL_PLANE_TIER: ${{ matrix.ip-family == 'IPv4' && 'tier-xl' || 'standard' }}
       # Optional mirror for the cyclonus and agnhost images; unset uses the upstream images.
       TEST_IMAGE_REGISTRY: ${{ secrets.TEST_IMAGE_REGISTRY }}
     steps:

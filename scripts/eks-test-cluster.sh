@@ -9,11 +9,14 @@
 # REGION: defaults to us-west-2
 # KUBECONFIG: defaults to ~/.kube/config
 # NODES_CAPACITY: number of worker nodes, defaults to 3
+# CONTROL_PLANE_TIER: EKS Provisioned Control Plane tier (standard, tier-xl, tier-2xl, tier-4xl), defaults to standard
+#   (create only)
 set -euo pipefail
 
 REGION="${REGION:-us-west-2}"
 KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
 NODES_CAPACITY="${NODES_CAPACITY:-3}"
+CONTROL_PLANE_TIER="${CONTROL_PLANE_TIER:-standard}"
 
 require() {
     local name
@@ -38,6 +41,8 @@ iam:
   withOIDC: true
 kubernetesNetworkConfig:
   ipFamily: ${IP_FAMILY}
+controlPlaneScalingConfig:
+  tier: ${CONTROL_PLANE_TIER}
 autoModeConfig:
   enabled: false
 addons:
