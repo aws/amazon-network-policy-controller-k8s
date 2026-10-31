@@ -196,9 +196,6 @@ jobs:
         env:
           NP_CONTROLLER_IMAGE: ${{ needs.build-image.outputs.image-repository }}
           NP_CONTROLLER_TAG: ${{ needs.build-image.outputs.image-tag }}
-          # The startup scale test caches 10k PolicyEndpoints of ~600 endpoints each, which needs more than the
-          # chart's 1Gi default.
-          NP_CONTROLLER_MEMORY_LIMIT: 4Gi
         run: ./scripts/deploy-controller-on-dataplane.sh
 
       # The report job finds this step by name. No continue-on-error, so a failed suite fails the

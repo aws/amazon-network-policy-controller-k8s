@@ -6,7 +6,8 @@
 # NP_CONTROLLER_IMAGE: Custom network policy controller image repository
 # NP_CONTROLLER_TAG: Custom network policy controller image tag
 # NP_CONTROLLER_ENDPOINT_CHUNK_SIZE: The number of endpoints in policy endpoint resource
-# NP_CONTROLLER_MEMORY_LIMIT: Optional controller memory limit, defaults to the chart value
+# NP_CONTROLLER_MEMORY_LIMIT: Controller memory limit, defaults to 4Gi. The startup scale test (test/e2e/startup)
+#   caches 10k PolicyEndpoints of ~600 endpoints each, which needs more than the chart's 1Gi default.
 
 set -e
 DIR=$(cd "$(dirname "$0")"; pwd)
@@ -28,9 +29,7 @@ if [[ ! -z $NP_CONTROLLER_ENDPOINT_CHUNK_SIZE ]]; then
     HELM_NPC_ARGS+=" --set endpointChunkSize=$NP_CONTROLLER_ENDPOINT_CHUNK_SIZE"
 fi
 
-if [[ ! -z $NP_CONTROLLER_MEMORY_LIMIT ]]; then
-    HELM_NPC_ARGS+=" --set resources.limits.memory=$NP_CONTROLLER_MEMORY_LIMIT"
-fi
+HELM_NPC_ARGS+=" --set resources.limits.memory=${NP_CONTROLLER_MEMORY_LIMIT:-4Gi}"
 
 echo "Deploy the default Amazon Network Policy Controller on Dataplane"
 helm template amazon-network-policy-controller-k8s ${DIR}/../charts/amazon-network-policy-controller-k8s \
