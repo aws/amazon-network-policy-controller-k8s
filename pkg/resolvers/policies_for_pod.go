@@ -66,6 +66,12 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 		}
 	}
 
+	svcReferredPolicies, err := r.getReferredPoliciesForPodServices(ctx, pod, podOld, processedPolicies)
+	if err != nil {
+		return nil, err
+	}
+	referredPolicies = append(referredPolicies, svcReferredPolicies...)
+
 	r.logger.V(1).Info("All referred policies", "pod", k8s.NamespacedName(pod), "policies", referredPolicies)
 	return referredPolicies, nil
 }
@@ -197,6 +203,12 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 			processedPolicies.Insert(k8s.NamespacedName(policy))
 		}
 	}
+
+	svcReferredANPs, err := r.getReferredANPsForPodServices(ctx, pod, podOld, processedPolicies)
+	if err != nil {
+		return nil, err
+	}
+	referredPolicies = append(referredPolicies, svcReferredANPs...)
 
 	r.logger.V(1).Info("All referred ANP policies", "pod", k8s.NamespacedName(pod), "policies", referredPolicies)
 	return referredPolicies, nil

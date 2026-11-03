@@ -28,6 +28,11 @@ func IsPodNetworkReady(pod *corev1.Pod) bool {
 		pod.Status.Phase != corev1.PodFailed
 }
 
+// IsPodTerminal returns true if the pod has finished and can no longer receive traffic
+func IsPodTerminal(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+}
+
 // LookupContainerPortAndName returns numerical containerPort and portName for specific port and protocol
 func LookupContainerPortAndName(pod *corev1.Pod, port intstr.IntOrString, protocol corev1.Protocol) (int32, string, error) {
 	for _, podContainer := range pod.Spec.Containers {
