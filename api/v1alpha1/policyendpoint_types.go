@@ -25,6 +25,7 @@ import (
 // PolicyReference is the reference to the network policy resource
 type PolicyReference struct {
 	// Name is the name of the Policy
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
 	// Namespace is the namespace of the Policy

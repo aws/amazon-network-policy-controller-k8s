@@ -227,6 +227,7 @@ spec:
                 properties:
                   name:
                     description: Name is the name of the Policy
+                    minLength: 1
                     type: string
                   namespace:
                     description: Namespace is the namespace of the Policy
