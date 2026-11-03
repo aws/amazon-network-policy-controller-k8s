@@ -16,7 +16,7 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForNamespace(ctx con
 	var referredPolicies []networking.NetworkPolicy
 	for _, policyRef := range r.policyTracker.GetPoliciesWithNamespaceReferences().UnsortedList() {
 		policy := &networking.NetworkPolicy{}
-		if err := r.k8sClient.Get(ctx, policyRef, policy); err != nil {
+		if err := r.k8sClient.Get(ctx, policyRef, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return nil, errors.Wrap(err, "failed to get policies")
 			}
@@ -72,7 +72,7 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 	var referredPolicies []policyinfo.ApplicationNetworkPolicy
 	for _, policyRef := range r.policyTracker.GetApplicationNetworkPoliciesWithNamespaceReferences().UnsortedList() {
 		policy := &policyinfo.ApplicationNetworkPolicy{}
-		if err := r.k8sClient.Get(ctx, policyRef, policy); err != nil {
+		if err := r.k8sClient.Get(ctx, policyRef, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return nil, errors.Wrap(err, "failed to get ANP policies")
 			}

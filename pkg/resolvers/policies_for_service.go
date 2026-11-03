@@ -30,7 +30,7 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForService(ctx conte
 	for policyRef := range potentialMatches {
 		r.logger.Info("Checking policy", "reference", policyRef)
 		policy := &networking.NetworkPolicy{}
-		if err := r.k8sClient.Get(ctx, policyRef, policy); err != nil {
+		if err := r.k8sClient.Get(ctx, policyRef, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return nil, errors.Wrap(err, "failed to get policy")
 			}
@@ -64,7 +64,7 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 	for policyRef := range potentialMatches {
 		r.logger.Info("Checking ANP", "reference", policyRef)
 		anp := &policyinfo.ApplicationNetworkPolicy{}
-		if err := r.k8sClient.Get(ctx, policyRef, anp); err != nil {
+		if err := r.k8sClient.Get(ctx, policyRef, anp, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return nil, errors.Wrap(err, "failed to get ANP")
 			}
@@ -113,7 +113,7 @@ func (r *defaultPolicyReferenceResolver) isServiceReferredOnEgress(ctx context.C
 func (r *defaultPolicyReferenceResolver) isServiceMatchLabelSelector(ctx context.Context, svc *corev1.Service, peer *networking.NetworkPolicyPeer, policyNamespace string) bool {
 	if peer.NamespaceSelector != nil {
 		ns := &corev1.Namespace{}
-		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: svc.Namespace}, ns); err != nil {
+		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: svc.Namespace}, ns, client.UnsafeDisableDeepCopy); err != nil {
 			r.logger.Info("Failed to get namespace", "namespace", svc.Namespace, "err", err)
 			return false
 		}
@@ -166,7 +166,7 @@ func (r *defaultPolicyReferenceResolver) isServiceReferredInANPEgress(ctx contex
 func (r *defaultPolicyReferenceResolver) isServiceMatchANPPeer(ctx context.Context, svc *corev1.Service, peer *policyinfo.ApplicationNetworkPolicyPeer, policyNamespace string) bool {
 	if peer.NamespaceSelector != nil {
 		ns := &corev1.Namespace{}
-		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: svc.Namespace}, ns); err != nil {
+		if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: svc.Namespace}, ns, client.UnsafeDisableDeepCopy); err != nil {
 			r.logger.Info("Failed to get namespace", "namespace", svc.Namespace, "err", err)
 			return false
 		}
