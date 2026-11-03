@@ -144,7 +144,119 @@ func (r *defaultPolicyReferenceResolver) isServiceMatchLabelSelector(ctx context
 	if svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
 		return true
 	}
+	return r.isAnyServiceBackendSelected(ctx, svc, svcSelector)
+}
+
+// isAnyServiceBackendSelected returns true if at least one backend pod of the service matches the peer
+// selector. The endpoints resolver may allow the ClusterIP when all backends match, so any such
+// policy must be re-resolved when the service or its backends change.
+func (r *defaultPolicyReferenceResolver) isAnyServiceBackendSelected(ctx context.Context, svc *corev1.Service, peerSelector labels.Selector) bool {
+	if len(svc.Spec.Selector) == 0 {
+		return false
+	}
+	podList := &corev1.PodList{}
+	if err := r.k8sClient.List(ctx, podList, &client.ListOptions{
+		LabelSelector: labels.SelectorFromSet(svc.Spec.Selector),
+		Namespace:     svc.Namespace,
+	}, client.UnsafeDisableDeepCopy); err != nil {
+		r.logger.Info("Unable to list service backend pods", "service", k8s.NamespacedName(svc), "err", err)
+		return false
+	}
+	for i := range podList.Items {
+		if peerSelector.Matches(labels.Set(podList.Items[i].Labels)) {
+			return true
+		}
+	}
 	return false
+}
+
+// getReferredPoliciesForPodServices returns policies whose egress may allow the ClusterIP of a service
+// that selects the pod. A backend joining or leaving such a service can change whether every backend
+// is selected by the peer, even when the pod itself does not match the peer.
+func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPodServices(ctx context.Context, pod *corev1.Pod, podOld *corev1.Pod,
+	processed sets.Set[types.NamespacedName]) ([]networking.NetworkPolicy, error) {
+	egressPolicies := r.policyTracker.GetPoliciesWithEgressRules()
+	if egressPolicies.Len() == 0 {
+		return nil, nil
+	}
+	var referred []networking.NetworkPolicy
+	err := r.forEachBackendService(ctx, pod, podOld, func(svc *corev1.Service) error {
+		for ref := range r.getPotentialPolicyMatches(svc, egressPolicies, r.policyTracker.GetPoliciesWithNamespaceReferences()) {
+			if processed.Has(ref) {
+				continue
+			}
+			policy := &networking.NetworkPolicy{}
+			if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
+				if client.IgnoreNotFound(err) != nil {
+					return errors.Wrap(err, "failed to get policy")
+				}
+				continue
+			}
+			if r.isServiceReferredOnEgress(ctx, svc, policy) {
+				referred = append(referred, *policy)
+				processed.Insert(ref)
+			}
+		}
+		return nil
+	})
+	return referred, err
+}
+
+// getReferredANPsForPodServices is the ApplicationNetworkPolicy counterpart of getReferredPoliciesForPodServices.
+func (r *defaultPolicyReferenceResolver) getReferredANPsForPodServices(ctx context.Context, pod *corev1.Pod, podOld *corev1.Pod,
+	processed sets.Set[types.NamespacedName]) ([]policyinfo.ApplicationNetworkPolicy, error) {
+	egressANPs := r.policyTracker.GetApplicationNetworkPoliciesWithEgressRules()
+	if egressANPs.Len() == 0 {
+		return nil, nil
+	}
+	var referred []policyinfo.ApplicationNetworkPolicy
+	err := r.forEachBackendService(ctx, pod, podOld, func(svc *corev1.Service) error {
+		for ref := range r.getPotentialPolicyMatches(svc, egressANPs, r.policyTracker.GetApplicationNetworkPoliciesWithNamespaceReferences()) {
+			if processed.Has(ref) {
+				continue
+			}
+			anp := &policyinfo.ApplicationNetworkPolicy{}
+			if err := r.k8sClient.Get(ctx, ref, anp, client.UnsafeDisableDeepCopy); err != nil {
+				if client.IgnoreNotFound(err) != nil {
+					return errors.Wrap(err, "failed to get ANP")
+				}
+				continue
+			}
+			if r.isServiceReferredInANPEgress(ctx, svc, anp) {
+				referred = append(referred, *anp)
+				processed.Insert(ref)
+			}
+		}
+		return nil
+	})
+	return referred, err
+}
+
+// forEachBackendService calls fn for every non-headless service in the pod's namespace that selects the pod.
+func (r *defaultPolicyReferenceResolver) forEachBackendService(ctx context.Context, pod *corev1.Pod, podOld *corev1.Pod,
+	fn func(svc *corev1.Service) error) error {
+	svcList := &corev1.ServiceList{}
+	if err := r.k8sClient.List(ctx, svcList, client.InNamespace(pod.Namespace), client.UnsafeDisableDeepCopy); err != nil {
+		return errors.Wrap(err, "failed to list services")
+	}
+	for i := range svcList.Items {
+		svc := &svcList.Items[i]
+		if k8s.IsServiceHeadless(svc) || !isPodBackendOfService(svc, pod, podOld) {
+			continue
+		}
+		if err := fn(svc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isPodBackendOfService(svc *corev1.Service, pod *corev1.Pod, podOld *corev1.Pod) bool {
+	if len(svc.Spec.Selector) == 0 {
+		return false
+	}
+	sel := labels.SelectorFromSet(svc.Spec.Selector)
+	return sel.Matches(labels.Set(pod.Labels)) || (podOld != nil && sel.Matches(labels.Set(podOld.Labels)))
 }
 
 // isServiceReferredInANPEgress returns true if the service is referred in the ANP egress rules
@@ -197,5 +309,5 @@ func (r *defaultPolicyReferenceResolver) isServiceMatchANPPeer(ctx context.Conte
 	if svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
 		return true
 	}
-	return false
+	return r.isAnyServiceBackendSelected(ctx, svc, svcSelector)
 }
