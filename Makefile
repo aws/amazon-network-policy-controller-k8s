@@ -83,6 +83,7 @@ test: manifests generate fmt vet envtest prepare-embed ## Run tests.
 .PHONY: prepare-embed
 prepare-embed: ## Prepare files for go:embed.
 	cat config/crd/bases/*.yaml > pkg/crd/crds.yaml
+	cat config/crd/bases/*.yaml > charts/amazon-network-policy-controller-k8s/crds/crds.yaml
 	sed -i '1834s/v0\.17\.0/v0.11.3/' pkg/crd/crds.yaml
 
 

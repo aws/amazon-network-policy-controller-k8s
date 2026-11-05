@@ -2,6 +2,9 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
+- bases/networking.k8s.aws_applicationnetworkpolicies.yaml
+- bases/networking.k8s.aws_clusternetworkpolicies.yaml
+- bases/networking.k8s.aws_clusterpolicyendpoints.yaml
 - bases/networking.k8s.aws_policyendpoints.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
