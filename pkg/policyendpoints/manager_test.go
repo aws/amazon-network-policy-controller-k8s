@@ -450,6 +450,51 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 				updateCount: 1,
 			},
 		},
+		{
+			name: "podSelector change updates existing PolicyEndpoint",
+			fields: fields{
+				endpointChunkSize: 100,
+			},
+			args: args{
+				policy: &networking.NetworkPolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "policy-namespace",
+						Name:      "policy-name",
+					},
+					Spec: networking.NetworkPolicySpec{
+						PodSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "disabled"},
+						},
+						Egress: []networking.NetworkPolicyEgressRule{{}},
+					},
+				},
+				policyEndpoints: []policyinfo.PolicyEndpoint{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Namespace: "policy-namespace",
+							Name:      "policy-name",
+						},
+						Spec: policyinfo.PolicyEndpointSpec{
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"app": "bar"},
+							},
+							Egress: getEPInfoHelper([]policyinfo.NetworkAddress{"1.2.3.4"}, nil, 1),
+							PodSelectorEndpoints: []policyinfo.PodEndpoint{
+								{Name: "pod1", HostIP: "10.0.0.1", PodIP: "192.168.1.1"},
+							},
+						},
+					},
+				},
+				egressRules:          getEPInfoHelper([]policyinfo.NetworkAddress{"1.2.3.4"}, nil, 1),
+				podselectorEndpoints: nil,
+				epValidator: func(netpol *networking.NetworkPolicy, ep *policyinfo.PolicyEndpoint) bool {
+					return equality.Semantic.DeepEqual(ep.Spec.PodSelector, &netpol.Spec.PodSelector)
+				},
+			},
+			want: want{
+				updateCount: 1,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

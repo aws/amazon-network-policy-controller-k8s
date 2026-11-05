@@ -270,7 +270,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	// Loop through ingressEndpoints, egressEndpoints and podSelectorEndpoints and put in map
 	// also populate them into policy endpoints
 	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
-		policy.Spec.PolicyTypes, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
+		policy.Spec.PolicyTypes, policy.Spec.PodSelector, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
 	)
 
 	doNotDelete := sets.Set[types.NamespacedName]{}
@@ -484,6 +484,7 @@ func int32PtrKeyPart(p *int32) string {
 // it returns required rules and pod selector changes, and potential modifications and deletions on policy endpoints.
 func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	policyTypes []networking.PolicyType,
+	podSelector metav1.LabelSelector,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
 	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint,
 ) (
@@ -541,6 +542,10 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 		policyEndpointChanged := false
 		if !equality.Semantic.DeepEqual(policyTypes, existingPolicyEndpoints[i].Spec.PodIsolation) {
 			existingPolicyEndpoints[i].Spec.PodIsolation = policyTypes
+			policyEndpointChanged = true
+		}
+		if existingPolicyEndpoints[i].Spec.PodSelector == nil || !equality.Semantic.DeepEqual(podSelector, *existingPolicyEndpoints[i].Spec.PodSelector) {
+			existingPolicyEndpoints[i].Spec.PodSelector = &podSelector
 			policyEndpointChanged = true
 		}
 
@@ -700,7 +705,7 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 
 	// Process existing endpoints for ANP
 	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
-		anp.Spec.PolicyTypes, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
+		anp.Spec.PolicyTypes, anp.Spec.PodSelector, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
 	)
 
 	doNotDelete := sets.Set[types.NamespacedName]{}
