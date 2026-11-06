@@ -80,10 +80,11 @@ test: manifests generate fmt vet envtest prepare-embed ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
 
 ##@ Build
+# sed -i.bak (suffix attached) is the in-place form both GNU and BSD/macOS sed accept.
 .PHONY: prepare-embed
 prepare-embed: ## Prepare files for go:embed.
 	cat config/crd/bases/*.yaml > pkg/crd/crds.yaml
-	sed -i '1834s/v0\.17\.0/v0.11.3/' pkg/crd/crds.yaml
+	sed -i.bak '1834s/v0\.17\.0/v0.11.3/' pkg/crd/crds.yaml && rm -f pkg/crd/crds.yaml.bak
 
 
 .PHONY: build
