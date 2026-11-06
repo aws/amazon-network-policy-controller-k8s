@@ -72,6 +72,26 @@ jobs:
           sudo tar -C /usr/local -xzf pluto_${number}_linux_amd64.tar.gz
       - run: |
           /usr/local/pluto detect-files -d .
+  dependency-check:
+    name: Check for out-of-date dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout latest commit in the PR
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache-dependency-path: "**/go.sum"
+      - name: Fail if any direct dependency is out of date
+        run: |
+          set +e
+          make check-deps CHECK_DEPS_STRICT=true 2>&1 | tee deps.txt
+          status=${PIPESTATUS[0]}
+          { echo '### Go dependency check'; echo '```'; cat deps.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
   vuln_check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
