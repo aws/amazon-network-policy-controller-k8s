@@ -75,6 +75,30 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+## Set CHECK_DEPS_STRICT=true to exit non-zero when any direct dependency is out of date.
+CHECK_DEPS_STRICT ?= false
+.PHONY: check-deps
+check-deps: ## List direct dependencies in go.mod that have newer versions available.
+	@if [ "$$(go env GOPROXY)" = "off" ]; then \
+		echo "ERROR: GOPROXY=off disables module lookups, so updates cannot be detected." >&2; \
+		exit 1; \
+	fi; \
+	errfile="$$(mktemp)"; trap 'rm -f "$$errfile"' EXIT; \
+	outdated="$$(go list -m -u -f '{{if and (not .Indirect) (not .Main) .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' all 2>"$$errfile")"; \
+	status=$$?; \
+	if [ $$status -ne 0 ] || [ -s "$$errfile" ]; then \
+		echo "ERROR: could not look up the latest dependency versions; results would be incomplete:" >&2; \
+		head -n 20 "$$errfile" >&2; \
+		exit 1; \
+	fi; \
+	if [ -z "$$outdated" ]; then \
+		echo "All direct dependencies are up to date."; \
+	else \
+		echo "Out-of-date direct dependencies:"; \
+		echo "$$outdated" | column -t; \
+		if [ "$(CHECK_DEPS_STRICT)" = "true" ]; then exit 1; fi; \
+	fi
+
 .PHONY: test
 test: manifests generate fmt vet envtest prepare-embed ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
