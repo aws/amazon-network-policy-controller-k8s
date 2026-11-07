@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/exp/maps"
@@ -336,11 +337,11 @@ func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyE
 // getCombineKey creates a combining key from CIDR or DomainName and sorted exceptions,
 // excluding ports so that entries with the same network identity get merged.
 func getCombineKey(ep policyinfo.EndpointInfo) string {
-	var key string
+	var key strings.Builder
 	if ep.DomainName != "" {
-		key = "fqdn|" + string(ep.DomainName) + "|"
+		key.WriteString("fqdn|" + string(ep.DomainName) + "|")
 	} else {
-		key = "cidr|" + string(ep.CIDR) + "|"
+		key.WriteString("cidr|" + string(ep.CIDR) + "|")
 	}
 
 	sortedExcepts := make([]policyinfo.NetworkAddress, len(ep.Except))
@@ -348,11 +349,13 @@ func getCombineKey(ep policyinfo.EndpointInfo) string {
 	sort.Slice(sortedExcepts, func(i, j int) bool {
 		return string(sortedExcepts[i]) < string(sortedExcepts[j])
 	})
+	// Append through the Builder: "key += ..." copies the whole key on every
+	// iteration, which is quadratic in the number of excepts.
 	for _, except := range sortedExcepts {
-		key += string(except) + "|"
+		key.WriteString(string(except) + "|")
 	}
 
-	return key
+	return key.String()
 }
 
 func combineRulesEndpoints(ingressEndpoints []policyinfo.EndpointInfo) []policyinfo.EndpointInfo {

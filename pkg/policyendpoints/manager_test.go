@@ -1630,3 +1630,13 @@ func Test_combineClusterRulesEndpoints(t *testing.T) {
 		})
 	}
 }
+
+func Test_getCombineKey(t *testing.T) {
+	assert.Equal(t, "fqdn|a.example.com|", getCombineKey(policyinfo.EndpointInfo{DomainName: "a.example.com"}))
+	assert.Equal(t, "cidr|0.0.0.0/0|", getCombineKey(policyinfo.EndpointInfo{CIDR: "0.0.0.0/0"}))
+	// Excepts are sorted and each one is terminated by "|", so different except
+	// lists can never produce the same key.
+	assert.Equal(t, "cidr|0.0.0.0/0|10.0.0.0/32|10.0.0.1/32|",
+		getCombineKey(policyinfo.EndpointInfo{CIDR: "0.0.0.0/0",
+			Except: []policyinfo.NetworkAddress{"10.0.0.1/32", "10.0.0.0/32"}}))
+}
