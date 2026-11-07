@@ -55,6 +55,8 @@ const (
 //   - cnps ClusterNetworkPolicies are evaluated for every pod, namespace, and service event in the cluster, and
 //     are resolved once per subject namespace.
 //   - ipBlocksPerPolicy adds ipBlock egress peers, which make policy objects larger without adding pod lookups.
+//   - exceptsPerIPBlock turns every ipBlock into 0.0.0.0/0 with that many /32 excepts. Rule keys are built from the
+//     whole except list, so this measures the per-reconcile cost of large except lists (for example IP blocklists).
 type workload struct {
 	namespaces           int
 	namespaceGroups      int
@@ -64,6 +66,7 @@ type workload struct {
 	anpPercent           int
 	cnps                 int
 	ipBlocksPerPolicy    int
+	exceptsPerIPBlock    int
 }
 
 // scenarios are named presets for workload. Individual NPC_SCALE_* variables override preset values.
@@ -84,6 +87,9 @@ var scenarios = map[string]workload{
 	"cnp": {namespaces: 50, namespaceGroups: 5, nsSelectorPercent: 10, cnps: 50},
 	// ipblock gives every policy many ipBlock egress peers.
 	"ipblock": {namespaces: 50, namespaceGroups: 5, nsSelectorPercent: 10, ipBlocksPerPolicy: 50},
+	// large-except gives every policy one ipBlock with 6,600 excepts. Run it with fewer policies, for example
+	// NPC_SCALE_POLICIES=300, because each policy object is about 100 KB.
+	"large-except": {namespaces: 1, namespaceGroups: 1, ipBlocksPerPolicy: 1, exceptsPerIPBlock: 6600},
 	// mixed combines every shape.
 	"mixed": {namespaces: 50, namespaceGroups: 5, nsSelectorPercent: 30, broadPolicies: 10, servicesPerNamespace: 5,
 		anpPercent: 20, cnps: 20, ipBlocksPerPolicy: 10},
@@ -100,8 +106,9 @@ func scenarioNames() []string {
 
 func (w workload) String() string {
 	return fmt.Sprintf("namespaces=%d namespaceGroups=%d nsSelectorPercent=%d broadPolicies=%d servicesPerNamespace=%d "+
-		"anpPercent=%d cnps=%d ipBlocksPerPolicy=%d", w.namespaces, w.namespaceGroups, w.nsSelectorPercent,
-		w.broadPolicies, w.servicesPerNamespace, w.anpPercent, w.cnps, w.ipBlocksPerPolicy)
+		"anpPercent=%d cnps=%d ipBlocksPerPolicy=%d exceptsPerIPBlock=%d", w.namespaces, w.namespaceGroups,
+		w.nsSelectorPercent, w.broadPolicies, w.servicesPerNamespace, w.anpPercent, w.cnps, w.ipBlocksPerPolicy,
+		w.exceptsPerIPBlock)
 }
 
 // expectedPolicies is the number of policies of any kind the controller has to reconcile.
@@ -224,6 +231,12 @@ func ingressPeer(i int) networking.NetworkPolicyPeer {
 
 func ipBlocks(i int) []networking.IPBlock {
 	blocks := make([]networking.IPBlock, 0, cfg.workload.ipBlocksPerPolicy)
+	if n := cfg.workload.exceptsPerIPBlock; n > 0 {
+		for b := 0; b < cfg.workload.ipBlocksPerPolicy; b++ {
+			blocks = append(blocks, networking.IPBlock{CIDR: "0.0.0.0/0", Except: excepts(n)})
+		}
+		return blocks
+	}
 	for b := 0; b < cfg.workload.ipBlocksPerPolicy; b++ {
 		blocks = append(blocks, networking.IPBlock{
 			CIDR:   fmt.Sprintf("172.%d.%d.0/24", 16+(i%16), b%256),
@@ -231,6 +244,16 @@ func ipBlocks(i int) []networking.IPBlock {
 		})
 	}
 	return blocks
+}
+
+// excepts returns n distinct /32 CIDRs from 100.64.0.0/10 (up to about 4M).
+func excepts(n int) []string {
+	out := make([]string, n)
+	for j := range out {
+		ip := 100<<24 | 64<<16 | j
+		out[j] = fmt.Sprintf("%d.%d.%d.%d/32", ip>>24&0xff, ip>>16&0xff, ip>>8&0xff, ip&0xff)
+	}
+	return out
 }
 
 // newPolicy builds policy i as a NetworkPolicy or, for anpPercent of the indexes, an ApplicationNetworkPolicy.
