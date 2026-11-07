@@ -440,6 +440,13 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 // Check how its tied in bin packing algo and fix if needed
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
 	hasher := sha256.New()
+	// Each "field=value|" record is assembled in a small scratch buffer and
+	// written straight to the hasher. This runs once per except on every
+	// reconcile, so it avoids fmt and never builds the whole byte stream.
+	var scratch [96]byte
+	write := func(field, value string) {
+		hasher.Write(append(append(append(scratch[:0], field...), value...), '|'))
+	}
 
 	// Every field is written delimited and self-describing so that no two
 	// semantically different endpoints can produce the same byte stream. A bare
@@ -447,20 +454,19 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 	// single port "123"; the "field=value|" framing removes that ambiguity.
 	// Handle FQDN case for ApplicationNetworkPolicy
 	if info.DomainName != "" {
-		fmt.Fprintf(hasher, "domainName=%s|", info.DomainName)
+		write("domainName=", string(info.DomainName))
 	} else {
 		// Handle CIDR case for NetworkPolicy
-		fmt.Fprintf(hasher, "cidr=%s|", info.CIDR)
+		write("cidr=", string(info.CIDR))
 		for _, except := range info.Except {
-			fmt.Fprintf(hasher, "except=%s|", except)
+			write("except=", string(except))
 		}
 	}
 
 	for _, port := range info.Ports {
-		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
-			protocolKeyPart(port.Protocol),
-			int32PtrKeyPart(port.Port),
-			int32PtrKeyPart(port.EndPort))
+		write("proto=", protocolKeyPart(port.Protocol))
+		write("port=", int32PtrKeyPart(port.Port))
+		write("endPort=", int32PtrKeyPart(port.EndPort))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
 }
