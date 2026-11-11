@@ -172,7 +172,11 @@ func workloadFor(name string) workload {
 	w.anpPercent = envIntOrDefault("NPC_SCALE_ANP_PERCENT", w.anpPercent)
 	w.cnps = envIntOrDefault("NPC_SCALE_CNPS", w.cnps)
 	w.ipBlocksPerPolicy = envIntOrDefault("NPC_SCALE_IPBLOCKS_PER_POLICY", w.ipBlocksPerPolicy)
+	w.exceptsPerIPBlock = envIntOrDefault("NPC_SCALE_EXCEPTS_PER_IPBLOCK", w.exceptsPerIPBlock)
 	Expect(w.namespaces).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACES must be positive")
+	// Each except is about 16 bytes in every policy object, so keep the total well inside etcd's limits.
+	Expect(cfg.policies*w.ipBlocksPerPolicy*w.exceptsPerIPBlock).To(BeNumerically("<=", 5_000_000),
+		"too many excepts in total (policies x ipBlocks x excepts), lower NPC_SCALE_POLICIES")
 	Expect(w.namespaceGroups).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACE_GROUPS must be positive")
 	return w
 }

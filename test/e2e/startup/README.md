@@ -49,6 +49,7 @@ namespace, service, ANP and CNP handlers. The individual `NPC_SCALE_*` variables
 | `anp` | every policy is an ApplicationNetworkPolicy |
 | `cnp` | adds 50 ClusterNetworkPolicies |
 | `ipblock` | every policy has 50 ipBlock egress peers |
+| `large-except` | every policy has one ipBlock `0.0.0.0/0` with 6,600 `/32` excepts; run with fewer policies (see below) |
 | `mixed` | all of the above at lower ratios |
 
 The test uses the controller deployment that is already in the cluster. It must be able to win the leader lease,
@@ -76,6 +77,7 @@ make run-startup-scale-test
 | `NPC_SCALE_ANP_PERCENT` | preset | percent of policies created as ApplicationNetworkPolicies |
 | `NPC_SCALE_CNPS` | preset | ClusterNetworkPolicies |
 | `NPC_SCALE_IPBLOCKS_PER_POLICY` | preset | ipBlock egress peers per policy |
+| `NPC_SCALE_EXCEPTS_PER_IPBLOCK` | preset | when set, every ipBlock is `0.0.0.0/0` with this many `/32` excepts |
 | `NPC_SCALE_KEEP_RESOURCES` | `false` | skip deleting the namespace and kwok nodes afterwards |
 | `NPC_SCALE_CREATE_CONCURRENCY` | `64` | parallel create requests |
 | `NPC_SCALE_POD_CREATE_RATE` | `25` | kwok pods created per second, `0` for unlimited; keep it below the control plane's pod scheduling rate |
@@ -89,3 +91,22 @@ make run-startup-scale-test
 | `KWOK_UNINSTALL` | `false` | uninstall kwok afterwards if the test installed it |
 
 In CI this test runs on the IPv4 leg of the `/test e2e <sha>` PR workflow (`.github/workflows/pr-e2e-tests.yaml`), after the cyclonus suite.
+
+### Large except lists
+
+`large-except` measures how long a new leader takes to reconcile policies whose ipBlock has a large `except` list
+(for example an IP blocklist). Each policy object is about 100 KB, so run it with a few hundred policies:
+
+```bash
+NPC_SCALE_SCENARIOS=large-except NPC_SCALE_POLICIES=300 NPC_SCALE_PODS=500 NPC_SCALE_KWOK_NODES=1 \
+  make run-startup-scale-test
+```
+
+At this size the takeover is bound by API calls, so compare `leader peak usage` between builds. To make the per-policy
+compute dominate, use fewer, larger policies and compare `allPolicyEndpoints` in `startup timings`:
+
+```bash
+NPC_SCALE_SCENARIOS=large-except NPC_SCALE_POLICIES=30 NPC_SCALE_EXCEPTS_PER_IPBLOCK=40000 NPC_SCALE_PODS=500 \
+  NPC_SCALE_KWOK_NODES=1 make run-startup-scale-test
+```
+
