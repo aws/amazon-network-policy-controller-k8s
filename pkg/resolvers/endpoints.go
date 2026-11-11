@@ -531,7 +531,7 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 			if npPort.Port != nil {
 				portVal, err := r.getMatchingServicePort(svc, npPort.Port, npProto, getAllPods)
 				if err != nil {
-					r.logger.Info("Unable to lookup service port", "err", err)
+					r.logger.V(1).Info("Unable to lookup service port", "err", err)
 					continue
 				}
 				// When the NP specifies a numeric port, check if the matched service port
@@ -689,7 +689,7 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(svc *corev1.Service, n
 	if portVal, err := k8s.LookupServiceListenPort(svc, *npPort, npProtocol); err == nil {
 		return portVal, nil
 	} else {
-		r.logger.Info("Unable to lookup service port", "err", err)
+		r.logger.V(1).Info("Unable to lookup service port", "err", err)
 	}
 
 	allPods, err := getAllPods()
