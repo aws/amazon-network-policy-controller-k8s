@@ -101,7 +101,7 @@ type policyEndpointsManager struct {
 func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error {
 	computeStart := time.Now()
 
-	ingressRules, egressRules, podSelectorEndpoints, err := m.endpointsResolver.Resolve(ctx, policy)
+	ingressGroups, egressRules, err := m.endpointsResolver.ResolveGroups(ctx, policy)
 	if err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
 	}
 
-	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
+	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressGroups, egressRules)
 	if err != nil {
 		return err
 	}
@@ -263,21 +263,9 @@ func (m *policyEndpointsManager) CleanupANP(ctx context.Context, anp *policyinfo
 // computePolicyEndpoints computes the policy endpoints for the given policy
 // The return values are list of policy endpoints to create, update and delete
 func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.NetworkPolicy,
-	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
-	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint,
+	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressGroups []resolvers.IngressGroup,
+	egressEndpoints []policyinfo.EndpointInfo) ([]policyinfo.PolicyEndpoint,
 	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, error) {
-
-	// Loop through ingressEndpoints, egressEndpoints and podSelectorEndpoints and put in map
-	// also populate them into policy endpoints
-	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
-		policy.Spec.PolicyTypes, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
-	)
-
-	doNotDelete := sets.Set[types.NamespacedName]{}
-
-	var createPolicyEndpoints []policyinfo.PolicyEndpoint
-	var updatePolicyEndpoints []policyinfo.PolicyEndpoint
-	var deletePolicyEndpoints []policyinfo.PolicyEndpoint
 
 	// Create metadata for NetworkPolicy
 	npMetadata := PolicyMetadata{
@@ -290,25 +278,47 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		Kind:        "NetworkPolicy",
 	}
 
-	// packing new ingress rules
-	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(npMetadata, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-	// packing new egress rules
-	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(npMetadata, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-	// packing new pod selector
-	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(npMetadata, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	var createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints []policyinfo.PolicyEndpoint
 
-	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
-
-	for _, ep := range potentialDeletes {
-		if doNotDelete.Has(k8s.NamespacedName(&ep)) {
-			updatePolicyEndpoints = append(updatePolicyEndpoints, ep)
-		} else {
-			deletePolicyEndpoints = append(deletePolicyEndpoints, ep)
+	if len(ingressGroups) > 1 {
+		// The selected pods resolved different port sets, so each group gets its own
+		// PolicyEndpoints and the packing runs over that group's existing ones only. Otherwise
+		// one group's rules would be packed into another group's object.
+		byGroup := map[string][]policyinfo.PolicyEndpoint{}
+		for _, pe := range existingPolicyEndpoints {
+			byGroup[pe.Spec.TargetGroup] = append(byGroup[pe.Spec.TargetGroup], pe)
 		}
+		seen := sets.New[string]()
+		for _, g := range ingressGroups {
+			seen.Insert(g.Key)
+			c, u, d := m.packPolicyEndpointGroup(npMetadata, g.Key, byGroup[g.Key], g.Ingress, nil, g.PodEndpoints)
+			createPolicyEndpoints = append(createPolicyEndpoints, c...)
+			updatePolicyEndpoints = append(updatePolicyEndpoints, u...)
+			deletePolicyEndpoints = append(deletePolicyEndpoints, d...)
+		}
+		// Egress does not vary by group, so it stays ungrouped and applies to every pod. This pass
+		// also drains any pre-grouping PolicyEndpoint of the ingress and pods it used to carry.
+		c, u, d := m.packPolicyEndpointGroup(npMetadata, "", byGroup[""], nil, egressEndpoints, nil)
+		createPolicyEndpoints = append(createPolicyEndpoints, c...)
+		updatePolicyEndpoints = append(updatePolicyEndpoints, u...)
+		deletePolicyEndpoints = append(deletePolicyEndpoints, d...)
+		// Objects of a group that no longer exists have nothing left to carry.
+		for group, pes := range byGroup {
+			if group == "" || seen.Has(group) {
+				continue
+			}
+			deletePolicyEndpoints = append(deletePolicyEndpoints, pes...)
+		}
+	} else {
+		var ingress []policyinfo.EndpointInfo
+		var podSelectorEndpoints []policyinfo.PodEndpoint
+		if len(ingressGroups) == 1 {
+			ingress, podSelectorEndpoints = ingressGroups[0].Ingress, ingressGroups[0].PodEndpoints
+		}
+		createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints = m.packPolicyEndpointGroup(
+			npMetadata, "", existingPolicyEndpoints, ingress, egressEndpoints, podSelectorEndpoints)
 	}
-	updatePolicyEndpoints = append(updatePolicyEndpoints, modifiedEndpoints...)
+
 	if len(createPolicyEndpoints) == 0 && len(updatePolicyEndpoints) == 0 {
 		if len(deletePolicyEndpoints) == 0 {
 			newEP := m.newPolicyEndpoint(npMetadata, nil, nil, nil)
@@ -321,6 +331,47 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 	}
 
 	return m.processPolicyEndpoints(createPolicyEndpoints), m.processPolicyEndpoints(updatePolicyEndpoints), deletePolicyEndpoints, nil
+}
+
+// packPolicyEndpointGroup runs the purge-then-binpack flow over one group's existing objects and
+// stamps the group on everything it creates or keeps, so an object never carries another group's
+// rules. targetGroup is empty for an ungrouped policy, which is the common case.
+func (m *policyEndpointsManager) packPolicyEndpointGroup(npMetadata PolicyMetadata, targetGroup string,
+	existing []policyinfo.PolicyEndpoint, ingressEndpoints, egressEndpoints []policyinfo.EndpointInfo,
+	podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint,
+	[]policyinfo.PolicyEndpoint) {
+
+	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
+		npMetadata.PolicyTypes, existing, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
+	)
+
+	var createPolicyEndpoints []policyinfo.PolicyEndpoint
+	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(npMetadata, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(npMetadata, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(npMetadata, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
+
+	doNotDelete := sets.Set[types.NamespacedName]{}
+	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
+	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
+	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
+
+	var updatePolicyEndpoints, deletePolicyEndpoints []policyinfo.PolicyEndpoint
+	for _, ep := range potentialDeletes {
+		if doNotDelete.Has(k8s.NamespacedName(&ep)) {
+			updatePolicyEndpoints = append(updatePolicyEndpoints, ep)
+		} else {
+			deletePolicyEndpoints = append(deletePolicyEndpoints, ep)
+		}
+	}
+	updatePolicyEndpoints = append(updatePolicyEndpoints, modifiedEndpoints...)
+
+	for i := range createPolicyEndpoints {
+		createPolicyEndpoints[i].Spec.TargetGroup = targetGroup
+	}
+	for i := range updatePolicyEndpoints {
+		updatePolicyEndpoints[i].Spec.TargetGroup = targetGroup
+	}
+	return createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints
 }
 
 func (m *policyEndpointsManager) processPolicyEndpoints(pes []policyinfo.PolicyEndpoint) []policyinfo.PolicyEndpoint {

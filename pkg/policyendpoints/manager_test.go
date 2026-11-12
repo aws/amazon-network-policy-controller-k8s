@@ -18,6 +18,7 @@ import (
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
 func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
@@ -456,8 +457,10 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 			m := &policyEndpointsManager{
 				endpointChunkSize: tt.fields.endpointChunkSize,
 			}
+			// One ungrouped group, which is what a policy whose pods agree resolves to.
+			groups := []resolvers.IngressGroup{{Ingress: tt.args.ingressRules, PodEndpoints: tt.args.podselectorEndpoints}}
 			createList, updateList, deleteList, err := m.computePolicyEndpoints(tt.args.policy, tt.args.policyEndpoints,
-				tt.args.ingressRules, tt.args.egressRules, tt.args.podselectorEndpoints)
+				groups, tt.args.egressRules)
 
 			if len(tt.wantErr) > 0 {
 				assert.EqualError(t, err, tt.wantErr)
