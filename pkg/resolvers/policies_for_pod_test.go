@@ -1509,6 +1509,9 @@ func TestPolicyReferenceResolver_GetReferredApplicationNetworkPoliciesForPod(t *
 				}
 				policyTracker.UpdateGenericPolicy(anp)
 			}
+			// The indexed cross-namespace pass reads the pod's Namespace once before touching any policy; an
+			// unlabelled namespace matches the tracked policies' empty namespaceSelector.
+			mockClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.AssignableToTypeOf(&corev1.Namespace{}), client.UnsafeDisableDeepCopy).Return(nil).AnyTimes()
 
 			mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any(), client.UnsafeDisableDeepCopy).DoAndReturn(
 				func(ctx context.Context, list *policyinfo.ApplicationNetworkPolicyList, opts ...client.ListOption) error {

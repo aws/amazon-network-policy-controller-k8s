@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 )
 
@@ -73,10 +74,69 @@ func names(ps []networking.NetworkPolicy) []string {
 func newFakeResolver(t *testing.T, objs ...client.Object) (*defaultPolicyReferenceResolver, *defaultPolicyTracker) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, policyinfo.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	nullLogger := logr.New(&log.NullLogSink{})
 	tracker := &defaultPolicyTracker{logger: nullLogger}
 	return &defaultPolicyReferenceResolver{k8sClient: c, policyTracker: tracker, logger: nullLogger}, tracker
+}
+
+// TestGetReferredANPsForPod_IndexFollowsPolicyChanges: the ApplicationNetworkPolicy pod path uses the same peer
+// index. Ingress peers are NetworkPolicyPeers, egress peers are ApplicationNetworkPolicyPeers; both are indexed.
+func TestGetReferredANPsForPod_IndexFollowsPolicyChanges(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "clients", Labels: map[string]string{"team": "a"}}}
+	anp := &policyinfo.ApplicationNetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "kh", Namespace: "servers"},
+		Spec: policyinfo.ApplicationNetworkPolicySpec{PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "kh"}},
+			Egress: []policyinfo.ApplicationNetworkPolicyEgressRule{{To: []policyinfo.ApplicationNetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "a"}},
+				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "db"}}}}}}}}
+	r, tracker := newFakeResolver(t, ns, anp)
+	tracker.UpdateGenericPolicy(anp)
+	peers, indexed := tracker.GetANPNamespaceSelectorPeers(k8s.NamespacedName(anp))
+	require.True(t, indexed)
+	require.Len(t, peers, 1)
+
+	db := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "db1", Namespace: "clients", Labels: map[string]string{"app": "db"}}, Status: corev1.PodStatus{PodIP: "10.0.0.1"}}
+	other := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "o1", Namespace: "clients", Labels: map[string]string{"app": "other"}}, Status: corev1.PodStatus{PodIP: "10.0.0.2"}}
+	got, err := r.GetReferredApplicationNetworkPoliciesForPod(context.Background(), db, nil)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "egress peer pod is matched through the index")
+	assert.Equal(t, "kh", got[0].Name)
+	got, err = r.GetReferredApplicationNetworkPoliciesForPod(context.Background(), other, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	got, err = r.GetReferredApplicationNetworkPoliciesForPod(context.Background(), other, db)
+	require.NoError(t, err)
+	assert.Len(t, got, 1, "podOld match is honoured")
+
+	// add an ingress peer with a namespaceSelector only: both peers indexed, every pod in team=a matches
+	updated := anp.DeepCopy()
+	updated.Spec.Ingress = []networking.NetworkPolicyIngressRule{{From: []networking.NetworkPolicyPeer{{
+		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "a"}}}}}}
+	require.NoError(t, r.k8sClient.Update(context.Background(), updated))
+	tracker.UpdateGenericPolicy(updated)
+	peers, _ = tracker.GetANPNamespaceSelectorPeers(k8s.NamespacedName(updated))
+	assert.Len(t, peers, 2)
+	got, err = r.GetReferredApplicationNetworkPoliciesForPod(context.Background(), other, nil)
+	require.NoError(t, err)
+	assert.Len(t, got, 1, "index follows the added peer")
+
+	// drop every namespaceSelector: out of the cross-namespace index
+	updated2 := updated.DeepCopy()
+	updated2.Spec.Ingress = nil
+	updated2.Spec.Egress[0].To[0].NamespaceSelector = nil
+	require.NoError(t, r.k8sClient.Update(context.Background(), updated2))
+	tracker.UpdateGenericPolicy(updated2)
+	_, indexed = tracker.GetANPNamespaceSelectorPeers(k8s.NamespacedName(updated2))
+	assert.False(t, indexed)
+	got, err = r.GetReferredApplicationNetworkPoliciesForPod(context.Background(), db, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	tracker.UpdateGenericPolicy(updated)
+	tracker.RemoveGenericPolicy(updated)
+	_, indexed = tracker.GetANPNamespaceSelectorPeers(k8s.NamespacedName(updated))
+	assert.False(t, indexed)
 }
 
 // randomPolicySet builds policies in several namespaces with a mix of peer shapes: namespaceSelector only,

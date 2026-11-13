@@ -215,12 +215,23 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 	r.logger.V(1).Info("ANP Policies referred on the same namespace", "pod", k8s.NamespacedName(pod),
 		"policies", referredPolicies)
 
-	// Second loop: Process cross-namespace ANP policies
-	// Check policies from other namespaces that have namespaceSelector rules
+	// Cross-namespace ANPs: same shape as the NetworkPolicy loop above, and the same reasons to keep it cheap
+	// (it runs on the pod informer's single event-delivery goroutine).
+	var nsLabels labels.Set
+	nsLoaded, nsFound := false, false
 	for _, ref := range r.policyTracker.GetApplicationNetworkPoliciesWithNamespaceReferences().UnsortedList() {
-		r.logger.V(1).Info("ANP Policy containing namespace selectors", "ref", ref)
 		if processedPolicies.Has(ref) {
 			continue
+		}
+		peers, indexed := r.policyTracker.GetANPNamespaceSelectorPeers(ref)
+		if indexed {
+			if !nsLoaded {
+				nsLabels, nsFound = r.podNamespaceLabels(ctx, pod)
+				nsLoaded = true
+			}
+			if !nsFound || !peersMatchPod(peers, nsLabels, pod, podOld) {
+				continue
+			}
 		}
 		policy := &policyinfo.ApplicationNetworkPolicy{}
 		if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
@@ -230,16 +241,15 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 			r.logger.Info("ANP Policy not found", "reference", ref)
 			continue
 		}
-
-		if r.isPodReferredOnANPIngressEgress(ctx, pod, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-			continue
+		if !indexed {
+			// Tracked before its peers were indexed: match the slow way, from the policy object.
+			if !r.isPodReferredOnANPIngressEgress(ctx, pod, policy) &&
+				!(podOld != nil && r.isPodReferredOnANPIngressEgress(ctx, podOld, policy)) {
+				continue
+			}
 		}
-		if podOld != nil && r.isPodReferredOnANPIngressEgress(ctx, podOld, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-		}
+		referredPolicies = append(referredPolicies, *policy)
+		processedPolicies.Insert(k8s.NamespacedName(policy))
 	}
 
 	r.logger.V(1).Info("All referred ANP policies", "pod", k8s.NamespacedName(pod), "policies", referredPolicies)
