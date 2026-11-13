@@ -25,6 +25,11 @@ func EqualPolicyEndpointSpec(a, b policyinfo.PolicyEndpointSpec) bool {
 	if !equalPodIsolation(a.PodIsolation, b.PodIsolation) {
 		return false
 	}
+	// Regrouping can leave the rules and the pods identical and change only this, so comparing
+	// it is what makes the PolicyEndpoint get updated.
+	if a.TargetGroup != b.TargetGroup {
+		return false
+	}
 
 	// Unordered slice fields.
 	if !equalEndpointInfoSlice(a.Ingress, b.Ingress) {
