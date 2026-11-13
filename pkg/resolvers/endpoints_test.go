@@ -1642,7 +1642,7 @@ func TestGetMatchingServiceClusterIPs_NamedPortBypass(t *testing.T) {
 			excludeServiceClusterIPs: []string{"10.100.76.99"},
 		},
 		{
-			name:          "safe: named NP port skips bypass check",
+			name:          "safe: named NP port equals named targetPort, each pod reached on its own resolved port",
 			npPodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"shared-backend": "true"}},
 			npPorts: []networking.NetworkPolicyPort{
 				{Protocol: &protocolTCP, Port: &namedPortHTTP},
@@ -1747,7 +1747,7 @@ func TestGetMatchingServiceClusterIPs_NamedPortBypass(t *testing.T) {
 			npPodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"shared-backend": "true"}},
 			npPorts: []networking.NetworkPolicyPort{
 				{Protocol: &protocolTCP, Port: &intOrStrPort80}, // numeric: bypass detected, skipped
-				{Protocol: &protocolTCP, Port: &namedPortHTTP},  // named: bypass check not applicable, included
+				{Protocol: &protocolTCP, Port: &namedPortHTTP},  // named: matches the named targetPort, no bypass, included
 			},
 			services: []corev1.Service{
 				{
@@ -1761,9 +1761,10 @@ func TestGetMatchingServiceClusterIPs_NamedPortBypass(t *testing.T) {
 			},
 			pods: []corev1.Pod{nginxPod, pythonPod},
 			// ClusterIP is still included because the named NP port "http" adds it.
-			// The numeric port 80 is correctly skipped (bypass risk), but the named
-			// port entry keeps the ClusterIP in the result — user explicitly opted into
-			// named port resolution which includes 8080.
+			// The numeric port 80 is correctly skipped: pythonPod remaps http to 8080,
+			// which 80 does not allow. The named entry is checked too and passes, since
+			// the policy and the targetPort name the same port, so each pod is reached
+			// on the port it resolved.
 			expectServiceClusterIPs: []string{"10.100.76.103"},
 		},
 	}
@@ -1809,6 +1810,8 @@ func TestEndpointsResolver_hasTargetPortBypass(t *testing.T) {
 	intOrStrPort80 := intstr.FromInt(80)
 	intOrStrPort8080 := intstr.FromInt(8080)
 	intOrStrPort6379 := intstr.FromInt(6379)
+	intOrStrPortAPI := intstr.FromString("api")
+	intOrStrPortMetrics := intstr.FromString("metrics")
 
 	tests := []struct {
 		name              string
@@ -2264,6 +2267,205 @@ func TestEndpointsResolver_hasTargetPortBypass(t *testing.T) {
 				},
 			},
 			expected: false, // first container resolves http→8080 which is allowed; sidecar's 8090 is irrelevant
+		},
+		{
+			name: "safe: named policy port equals named targetPort, divergence is what the policy allows",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 80, TargetPort: intstr.FromString("api"), Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 80,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP, Port: &intOrStrPortAPI},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{{Name: "api", ContainerPort: 9090, Protocol: corev1.ProtocolTCP}}},
+						},
+					},
+				},
+			},
+			expected: false, // each pod resolves api to its own port
+		},
+		{
+			name: "problematic: named policy port with numeric targetPort, backends resolve the name differently",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 80, TargetPort: intstr.FromInt(8080), Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 80,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP, Port: &intOrStrPortAPI},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod2", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{
+								{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+								{Name: "api", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
+							}},
+						},
+					},
+				},
+			},
+			expected: true, // pod2 resolves api to 9090, not the 8080 it would receive
+		},
+		{
+			name: "problematic: named policy port differs from named targetPort",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 80, TargetPort: intstr.FromString("http"), Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 80,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP, Port: &intOrStrPortMetrics},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{
+								{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+								{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
+							}},
+						},
+					},
+				},
+			},
+			expected: true, // http resolves to 8080 and metrics to 9090
+		},
+		{
+			name: "safe: unset targetPort defaults to the service port and the named policy port matches it",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 8080, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 8080,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP, Port: &intOrStrPortAPI},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "problematic: unset targetPort, named policy port resolves to a different number",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 8080, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 8080,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP, Port: &intOrStrPortAPI},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{
+								{ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+								{Name: "api", ContainerPort: 9090, Protocol: corev1.ProtocolTCP},
+							}},
+						},
+					},
+				},
+			},
+			expected: true, // resolves api to 9090, not the 8080 it would receive
+		},
+		{
+			name: "safe: protocol-only policy entry allows every port",
+			service: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Selector:  map[string]string{"app": "test"},
+					Ports: []corev1.ServicePort{
+						{Port: 80, TargetPort: intstr.FromString("api"), Protocol: corev1.ProtocolTCP},
+					},
+				},
+			},
+			matchedListenPort: 80,
+			protocol:          corev1.ProtocolTCP,
+			policyPorts: []networking.NetworkPolicyPort{
+				{Protocol: &protocolTCP},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod1", Namespace: "ns", Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Ports: []corev1.ContainerPort{{Name: "api", ContainerPort: 9090, Protocol: corev1.ProtocolTCP}}},
+						},
+					},
+				},
+			},
+			expected: false,
 		},
 	}
 
