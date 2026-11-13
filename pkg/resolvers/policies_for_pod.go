@@ -41,10 +41,25 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 	r.logger.V(1).Info("Policies referred on the same namespace", "pod", k8s.NamespacedName(pod),
 		"policies", referredPolicies)
 
+	// Cross-namespace policies: every tracked policy with a namespaceSelector peer. This loop runs on the pod
+	// informer's single event-delivery goroutine for every pod event, so it must stay cheap: the pod's Namespace
+	// is read once, the peers' selectors come pre-parsed from the tracker, and the policy object itself is only
+	// read for the policies that match (it is what the caller enqueues).
+	var nsLabels labels.Set
+	nsLoaded, nsFound := false, false
 	for _, ref := range r.policyTracker.GetPoliciesWithNamespaceReferences().UnsortedList() {
-		r.logger.V(1).Info("Policy containing namespace selectors", "ref", ref)
 		if processedPolicies.Has(ref) {
 			continue
+		}
+		peers, indexed := r.policyTracker.GetNamespaceSelectorPeers(ref)
+		if indexed {
+			if !nsLoaded {
+				nsLabels, nsFound = r.podNamespaceLabels(ctx, pod)
+				nsLoaded = true
+			}
+			if !nsFound || !peersMatchPod(peers, nsLabels, pod, podOld) {
+				continue
+			}
 		}
 		policy := &networking.NetworkPolicy{}
 		if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
@@ -54,20 +69,49 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 			r.logger.Info("Policy not found", "reference", ref)
 			continue
 		}
-
-		if r.isPodReferredOnIngressEgress(ctx, pod, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-			continue
+		if !indexed {
+			// Tracked before its peers were indexed: match the slow way, from the policy object.
+			if !r.isPodReferredOnIngressEgress(ctx, pod, policy) &&
+				!(podOld != nil && r.isPodReferredOnIngressEgress(ctx, podOld, policy)) {
+				continue
+			}
 		}
-		if podOld != nil && r.isPodReferredOnIngressEgress(ctx, podOld, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-		}
+		referredPolicies = append(referredPolicies, *policy)
+		processedPolicies.Insert(k8s.NamespacedName(policy))
 	}
 
 	r.logger.V(1).Info("All referred policies", "pod", k8s.NamespacedName(pod), "policies", referredPolicies)
 	return referredPolicies, nil
+}
+
+// podNamespaceLabels returns the labels of the pod's namespace from the cache. found is false when the namespace
+// cannot be read, which makes every namespaceSelector peer a non-match, as the per-peer lookup did before. A
+// namespace with no labels is found with an empty set (an empty namespaceSelector still matches it).
+func (r *defaultPolicyReferenceResolver) podNamespaceLabels(ctx context.Context, pod *corev1.Pod) (nsLabels labels.Set, found bool) {
+	ns := &corev1.Namespace{}
+	if err := r.k8sClient.Get(ctx, types.NamespacedName{Name: pod.Namespace}, ns, client.UnsafeDisableDeepCopy); err != nil {
+		r.logger.Info("Unable to get namespace", "ns", pod.Namespace, "err", err)
+		return nil, false
+	}
+	return labels.Set(ns.Labels), true
+}
+
+// peersMatchPod reports whether any namespaceSelector peer selects the pod (or, on an update, the pod as it was):
+// the pod's namespace labels must match the peer's namespaceSelector and, when the peer has a podSelector, the
+// pod's labels must match it too.
+func peersMatchPod(peers []PeerSelectors, nsLabels labels.Set, pod, podOld *corev1.Pod) bool {
+	for i := range peers {
+		if !peers[i].Namespace.Matches(nsLabels) {
+			continue
+		}
+		if peers[i].Pod == nil || peers[i].Pod.Matches(labels.Set(pod.Labels)) {
+			return true
+		}
+		if podOld != nil && peers[i].Pod.Matches(labels.Set(podOld.Labels)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *defaultPolicyReferenceResolver) isPodMatchesPolicySelector(pod *corev1.Pod, podOld *corev1.Pod, policy *networking.NetworkPolicy) bool {

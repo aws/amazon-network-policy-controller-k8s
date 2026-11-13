@@ -7,6 +7,8 @@ import (
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/go-logr/logr"
 	networking "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,6 +23,17 @@ type PolicyTracker interface {
 	GetPoliciesWithEgressRules() sets.Set[types.NamespacedName]
 	GetApplicationNetworkPoliciesWithNamespaceReferences() sets.Set[types.NamespacedName]
 	GetApplicationNetworkPoliciesWithEgressRules() sets.Set[types.NamespacedName]
+	// GetNamespaceSelectorPeers returns the policy's ingress/egress peers that carry a namespaceSelector, with
+	// both selectors parsed once at tracking time. ok is false when the policy is not tracked with namespace
+	// references (callers then fall back to reading the policy). The slice is shared and must not be mutated.
+	GetNamespaceSelectorPeers(ref types.NamespacedName) (peers []PeerSelectors, ok bool)
+}
+
+// PeerSelectors is one namespaceSelector peer of a tracked policy. Namespace is never nil; Pod is nil when the
+// peer has no podSelector, which matches every pod in a matching namespace.
+type PeerSelectors struct {
+	Namespace labels.Selector
+	Pod       labels.Selector
 }
 
 func NewPolicyTracker(logger logr.Logger) PolicyTracker {
@@ -34,6 +47,7 @@ var _ PolicyTracker = (*defaultPolicyTracker)(nil)
 type defaultPolicyTracker struct {
 	logger              logr.Logger
 	namespacedPolicies  sync.Map
+	peerSelectors       sync.Map // types.NamespacedName -> []PeerSelectors, for namespacedPolicies only
 	egressRulesPolicies sync.Map
 	namespacedANP       sync.Map
 	egressRulesANP      sync.Map
@@ -115,10 +129,14 @@ func (t *defaultPolicyTracker) containsANPEgressRules(policy *policyinfo.Applica
 func (t *defaultPolicyTracker) UpdatePolicy(policy *networking.NetworkPolicy) {
 	if t.containsNamespaceReference(policy) {
 		t.logger.V(1).Info("policy contains ns references", "policy", k8s.NamespacedName(policy))
+		// Parse the peer selectors here, once per policy change, so the pod event handler matches against
+		// parsed selectors instead of re-parsing every peer of every tracked policy on every pod event.
+		t.peerSelectors.Store(k8s.NamespacedName(policy), t.parseNamespaceSelectorPeers(policy))
 		t.namespacedPolicies.Store(k8s.NamespacedName(policy), true)
 	} else {
 		t.logger.V(1).Info("no ns references, remove tracking", "policy", k8s.NamespacedName(policy))
 		t.namespacedPolicies.Delete(k8s.NamespacedName(policy))
+		t.peerSelectors.Delete(k8s.NamespacedName(policy))
 	}
 	if t.containsEgressRules(policy) {
 		t.logger.V(1).Info("policy contains egress rules", "policy", k8s.NamespacedName(policy))
@@ -133,7 +151,54 @@ func (t *defaultPolicyTracker) UpdatePolicy(policy *networking.NetworkPolicy) {
 func (t *defaultPolicyTracker) RemovePolicy(policy *networking.NetworkPolicy) {
 	t.logger.V(1).Info("remove from tracking", "policy", k8s.NamespacedName(policy))
 	t.namespacedPolicies.Delete(k8s.NamespacedName(policy))
+	t.peerSelectors.Delete(k8s.NamespacedName(policy))
 	t.egressRulesPolicies.Delete(k8s.NamespacedName(policy))
+}
+
+// GetNamespaceSelectorPeers implements PolicyTracker.
+func (t *defaultPolicyTracker) GetNamespaceSelectorPeers(ref types.NamespacedName) ([]PeerSelectors, bool) {
+	v, ok := t.peerSelectors.Load(ref)
+	if !ok {
+		return nil, false
+	}
+	return v.([]PeerSelectors), true
+}
+
+// parseNamespaceSelectorPeers returns the peers of the policy that carry a namespaceSelector, selectors parsed.
+// A peer whose selector does not parse is dropped, which is what the per-event matcher did for it (never a match).
+func (t *defaultPolicyTracker) parseNamespaceSelectorPeers(policy *networking.NetworkPolicy) []PeerSelectors {
+	var out []PeerSelectors
+	add := func(peer *networking.NetworkPolicyPeer) {
+		if peer.NamespaceSelector == nil {
+			return
+		}
+		nsSel, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
+		if err != nil {
+			t.logger.Info("Unable to get namespace selector", "policy", k8s.NamespacedName(policy), "selector", peer.NamespaceSelector, "err", err)
+			return
+		}
+		ps := PeerSelectors{Namespace: nsSel}
+		if peer.PodSelector != nil {
+			podSel, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+			if err != nil {
+				t.logger.Info("Unable to get pod selector", "policy", k8s.NamespacedName(policy), "selector", peer.PodSelector, "err", err)
+				return
+			}
+			ps.Pod = podSel
+		}
+		out = append(out, ps)
+	}
+	for i := range policy.Spec.Ingress {
+		for j := range policy.Spec.Ingress[i].From {
+			add(&policy.Spec.Ingress[i].From[j])
+		}
+	}
+	for i := range policy.Spec.Egress {
+		for j := range policy.Spec.Egress[i].To {
+			add(&policy.Spec.Egress[i].To[j])
+		}
+	}
+	return out
 }
 
 // GetPoliciesWithNamespaceReferences returns the set of policies that have namespace references in the ingress/egress rules
