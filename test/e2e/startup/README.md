@@ -32,6 +32,25 @@ within `NPC_STARTUP_TIMEOUT`. Both startup bounds must stay below 2m; the test r
 builds it reports the barrier, the restart reason and previous container logs, and how long the leader held the lease
 before the first PolicyEndpoint appeared.
 
+### Pod churn
+
+Once the controller has started, a second spec checks that new pods keep reaching their PolicyEndpoints while pods
+churn (issue #288). The pod event handler resolves every pod event on the pod informer's single event-delivery
+goroutine, and each event is checked against every policy with a namespaceSelector peer. A handler slower than the event
+rate builds a backlog that only grows, and new pods stop reaching their PolicyEndpoints while reconciles, the work
+queue, the lease and the health checks all look healthy. The startup spec cannot see this, because the initial-list pod
+events are not handled at startup.
+
+The spec first creates `NPC_CHURN_PROBES` pairs of probe pods for NetworkPolicies with a namespaceSelector peer, one
+selected by the policy's podSelector and one by its ingress peer, and records how long each takes to appear in the
+policy's PolicyEndpoints with no churn. That time depends on the workload: in `baseline` a probe pod is selected by
+hundreds of policies, and it waits for all of their PolicyEndpoint writes at the controller's API client rate limit.
+It then creates `NPC_CHURN_RATE` pods per second in a namespace no generated policy selects and deletes each after
+`NPC_CHURN_POD_LIFETIME`. Those pods cost the pod handler the same as any other pod event but change no
+PolicyEndpoint. After `NPC_CHURN_WARMUP` it repeats the probes and fails if their median is more than `NPC_CHURN_MAX_DELAY`
+above the median without churn, if any probe takes `NPC_CHURN_MAX_DELAY` longer than the slowest probe without churn,
+or if the controller restarts. It reports both sets of times and the controller's CPU.
+
 ### Scenarios
 
 `NPC_SCALE_SCENARIOS` lists the workload shapes to run, one after the other; each one exercises a different
@@ -83,6 +102,11 @@ make run-startup-scale-test
 | `NPC_STARTUP_BARRIER_TIMEOUT` | `15s` | how long the leader may take from acquiring the lease to starting the policy controller workers; must be below 2m |
 | `NPC_FIRST_RECONCILE_TIMEOUT` | `30s` | how long the leader may hold the lease before creating its first PolicyEndpoint; must be below 2m |
 | `NPC_CACHE_WARMUP` | `1m` | how long the controller pods sync caches before the lease is released |
+| `NPC_CHURN_RATE` | `25` | pods created (and later deleted) per second by the pod churn spec, `0` skips the spec |
+| `NPC_CHURN_POD_LIFETIME` | `30s` | how long each churn pod lives |
+| `NPC_CHURN_WARMUP` | `2m` | how long pods churn before the probes are repeated, so a slow handler has time to fall behind |
+| `NPC_CHURN_PROBES` | `3` | probe pairs (podSelector target and ingress peer), run once without and once with churn; each probe pod gets its own kwok node |
+| `NPC_CHURN_MAX_DELAY` | `15s` | how much churn may add to the median (and to the slowest) pod to PolicyEndpoint time |
 | `NPC_NAMESPACE` / `NPC_DEPLOYMENT` | `kube-system` / `amazon-network-policy-controller-k8s` | controller deployment |
 | `KWOK_VERSION` | `v0.8.0` | kwok release to install |
 | `KWOK_SKIP_INSTALL` | `false` | don't install kwok |

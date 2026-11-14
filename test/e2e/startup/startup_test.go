@@ -303,6 +303,12 @@ func describeStartupScenario(scenario string) {
 			Expect(reconciledCount).To(Equal(expected),
 				"controller did not create endpoints for all policies within %s", cfg.startupTimeout)
 		})
+
+		// Runs only after the controller has started and reconciled every policy (the container is Ordered, so a
+		// failed startup skips it). See expectPodsResolvedUnderChurn.
+		It("resolves new pods into PolicyEndpoints while pods churn", func() {
+			expectPodsResolvedUnderChurn(ctx)
+		})
 	})
 }
 
