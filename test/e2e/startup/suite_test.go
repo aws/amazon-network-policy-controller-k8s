@@ -148,9 +148,9 @@ func loadTestConfig() testConfig {
 		// Far below the 167 pods/s the tier-xl control plane schedules, since kwok also writes the status of every
 		// pod it starts. 10k pods take about 7 minutes.
 		podCreateRate: envIntOrDefault("NPC_SCALE_POD_CREATE_RATE", 25),
-		// Pod churn after startup (issue #288). Each churn pod produces about three resolved pod events (IP assigned,
-		// Running, deleted), so the default is about 75 pod events per second, the same create rate the control plane
-		// already absorbs while the workload is created.
+		// Pod churn after startup (issue #288). Each churn pod produces a few resolved pod events (the IP and phase
+		// updates, the deletion). The default create rate is the workload's NPC_SCALE_POD_CREATE_RATE, plus as many
+		// deletes per second once the first pods expire.
 		churnRate:        envIntOrDefault("NPC_CHURN_RATE", 25),
 		churnPodLifetime: envDurationOrDefault("NPC_CHURN_POD_LIFETIME", 30*time.Second),
 		churnWarmup:      envDurationOrDefault("NPC_CHURN_WARMUP", 2*time.Minute),
@@ -171,14 +171,17 @@ func loadTestConfig() testConfig {
 		"%d kwok nodes hold at most %d pods, raise NPC_SCALE_KWOK_NODES", c.kwokNodes, c.kwokNodes*kwokPodsPerNode)
 	if c.churnRate > 0 {
 		Expect(c.churnProbes).To(BeNumerically(">", 0), "NPC_CHURN_PROBES must be positive")
-		Expect(4*c.churnProbes).To(BeNumerically("<=", c.kwokNodes),
-			"pod churn gives each of its %d probe pods its own kwok node; lower NPC_CHURN_PROBES or raise NPC_SCALE_KWOK_NODES",
-			4*c.churnProbes)
+		Expect(c.churnPodLifetime).To(BeNumerically(">", 0), "NPC_CHURN_POD_LIFETIME must be positive")
+		Expect(c.churnWarmup).To(BeNumerically(">=", 0), "NPC_CHURN_WARMUP must not be negative")
 		Expect(c.churnMaxDelay).To(BeNumerically(">", 0), "NPC_CHURN_MAX_DELAY must be positive")
+		Expect(4*c.churnProbes).To(BeNumerically("<=", c.kwokNodes),
+			"pod churn puts each of its %d probe pods on its own kwok node; lower NPC_CHURN_PROBES or raise "+
+				"NPC_SCALE_KWOK_NODES", 4*c.churnProbes)
+		// Pods are spread over the kwok nodes round robin, so the total is what has to fit.
 		live := c.pods + c.churnRate*int(c.churnPodLifetime.Seconds()+1) + 4*c.churnProbes
 		Expect(c.kwokNodes*kwokPodsPerNode).To(BeNumerically(">=", live),
-			"%d kwok nodes hold at most %d pods but pod churn keeps up to %d alive, raise NPC_SCALE_KWOK_NODES or lower "+
-				"NPC_CHURN_RATE", c.kwokNodes, c.kwokNodes*kwokPodsPerNode, live)
+			"%d kwok nodes hold at most %d pods but pod churn keeps up to %d alive, raise NPC_SCALE_KWOK_NODES or "+
+				"lower NPC_CHURN_RATE", c.kwokNodes, c.kwokNodes*kwokPodsPerNode, live)
 	}
 	return c
 }

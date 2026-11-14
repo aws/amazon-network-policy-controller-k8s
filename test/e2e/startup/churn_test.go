@@ -22,12 +22,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,209 +38,331 @@ import (
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 )
 
-// churnLabel marks the pods created by the pod churn spec.
-const churnLabel = "networking.k8s.aws/npc-startup-scale-churn"
+const (
+	// idleProbeTimeout bounds a probe without churn. It only catches a controller that never writes the
+	// PolicyEndpoint; the spec's check is how much churn adds to the times measured without it.
+	idleProbeTimeout = 2 * time.Minute
+	// churnProbeGrace is how long a churn probe keeps waiting past its bound, so that the spec reports how late a
+	// slow probe was instead of only that it missed the bound.
+	churnProbeGrace = time.Minute
+	// minChurnRateFraction is the fraction of NPC_CHURN_RATE the churn must reach for the result to count.
+	minChurnRateFraction = 0.8
+	// churnWorkers create and delete churn pods concurrently, so that API latency does not lower the churn rate.
+	churnWorkers = 8
+	// namespaceDeleteTimeout bounds the wait for the churn namespace to be deleted.
+	namespaceDeleteTimeout = 5 * time.Minute
+)
 
-// expectPodsResolvedUnderChurn checks that the pod event handler keeps up with steady pod churn once the controller is
-// running (issue #288). Every pod event is resolved on the pod informer's single event-delivery goroutine, so a
-// handler that is slower than the event rate builds a backlog that only grows: new pods stop reaching their
-// PolicyEndpoints while reconciles, the work queue, the lease and the health checks all look healthy.
+// expectPodsResolvedUnderChurn checks that new pods keep reaching their PolicyEndpoints while pods churn, once the
+// controller is running (issue #288). The pod event handler resolves every pod event on the pod informer's single
+// event-delivery goroutine, and checks each one against every policy with a namespaceSelector peer. A handler slower
+// than the event rate builds a backlog that only grows, and new pods stop reaching their PolicyEndpoints while
+// reconciles, the work queue, the lease and the health checks all look healthy.
 //
-// The spec first measures how long probe pods take to reach their policy's PolicyEndpoints with no churn: one pod
+// The spec first measures how long probe pods take to reach their policy's PolicyEndpoints without churn: one pod
 // selected by the policy's podSelector and one selected by its ingress peer, for NPC_CHURN_PROBES policies. That time
-// depends on the workload (a pod that hundreds of policies select waits for all of their PolicyEndpoint writes at the
-// controller's API client rate limit) and is not what this spec is about. It then churns pods in a namespace no
-// generated policy selects, so the churn pods cost the handler the same as any other pod event (each is checked
-// against every policy with a namespaceSelector peer) but change no PolicyEndpoint. After NPC_CHURN_WARMUP it repeats
-// the same probes and fails if their median is more than NPC_CHURN_MAX_DELAY above the median without churn, or if a
-// probe takes NPC_CHURN_MAX_DELAY longer than the slowest probe without churn. Medians, because a single probe's time
-// varies with where its policies land in the work queue.
+// depends on the workload; in baseline a probe pod is selected by hundreds of policies and waits for all of their
+// PolicyEndpoint writes at the controller's API client rate limit. It then churns pods in a namespace that no generated
+// policy selects. Each churn pod costs the handler the same as any other pod event but changes no PolicyEndpoint.
+// After NPC_CHURN_WARMUP it repeats the probes, and fails if the slowest one is more than NPC_CHURN_MAX_DELAY slower
+// than the slowest without churn, if the median rises by more than NPC_CHURN_MAX_DELAY, if the churn did not reach
+// minChurnRateFraction of NPC_CHURN_RATE, or if a controller pod restarted or was replaced.
 func expectPodsResolvedUnderChurn(ctx context.Context) {
 	if cfg.churnRate <= 0 {
 		Skip("NPC_CHURN_RATE is 0")
 	}
+	policies := probePolicies()
+	leader := waitForLeader(ctx)
+
+	By(fmt.Sprintf("probing %d policies without pod churn", len(policies)))
+	idle := runProbes(ctx, "idle", policies, idleProbeTimeout, true)
+	Expect(idle.failures).To(BeEmpty(), "new pods did not reach their PolicyEndpoints even without pod churn")
+
+	controllers := controllerPodRestarts(ctx)
+	By(fmt.Sprintf("churning %d pods per second in namespace %s, each living %s", cfg.churnRate, churnNamespace(),
+		cfg.churnPodLifetime))
+	createChurnNamespace(ctx)
+	DeferCleanup(deleteChurnNamespace)
+	churn := startPodChurn()
+	DeferCleanup(func() { churn.stop() })
+	before := scrapeLeaderCPU(leader)
+
+	By(fmt.Sprintf("waiting %s for a slow pod event handler to fall behind", cfg.churnWarmup))
+	sleepWithContext(ctx, cfg.churnWarmup)
+
+	bound := idle.max() + cfg.churnMaxDelay
+	By(fmt.Sprintf("probing the same policies while pods churn, allowing each probe %s", bound.Round(time.Second)))
+	churning := runProbes(ctx, "churn", policies, bound+churnProbeGrace, false)
+	churned := churn.stop()
+
+	after := scrapeLeaderCPU(leader)
+	leaderAfter := waitForLeader(ctx)
+	cpu := "unavailable"
+	if before.err == nil && after.err == nil && leaderAfter == leader {
+		cpu = fmt.Sprintf("%.2f cores", (after.seconds-before.seconds)/after.at.Sub(before.at).Seconds())
+	}
+	AddReportEntry("pod churn", fmt.Sprintf("scenario=%s churnPods=%d churnFailures=%d rate=%.1f/s lifetime=%s "+
+		"idle(probes=%d p50=%s max=%s) churn(resolved=%d of %d, p50=%s max=%s, bound=%s) leader=%s leaderCPU=%s",
+		cfg.scenario, churned.created, churned.failed, churned.rate(), cfg.churnPodLifetime, len(idle.latencies),
+		roundDuration(idle.median()), roundDuration(idle.max()), len(churning.latencies), 2*len(policies),
+		roundDuration(churning.median()), roundDuration(churning.max()), roundDuration(bound), leaderAfter, cpu))
+
+	Expect(controllerPodRestarts(ctx)).To(Equal(controllers),
+		"controller pods restarted or were replaced during pod churn")
+	Expect(churned.rate()).To(BeNumerically(">=", minChurnRateFraction*float64(cfg.churnRate)),
+		"pod churn reached %.1f pods/s, below %.0f%% of NPC_CHURN_RATE=%d (%d creates failed), so the result "+
+			"does not count",
+		churned.rate(), 100*minChurnRateFraction, cfg.churnRate, churned.failed)
+	Expect(churning.failures).To(BeEmpty(), "new pods did not reach their PolicyEndpoints while pods churned")
+	Expect(churning.max()).To(BeNumerically("<=", bound),
+		"pod churn made the slowest probe take %s, more than the slowest without churn (%s) plus NPC_CHURN_MAX_DELAY",
+		roundDuration(churning.max()), roundDuration(idle.max()))
+	Expect(churning.median()).To(BeNumerically("<=", idle.median()+cfg.churnMaxDelay),
+		"pod churn raised the median pod to PolicyEndpoint time from %s to %s, more than NPC_CHURN_MAX_DELAY",
+		roundDuration(idle.median()), roundDuration(churning.median()))
+}
+
+// waitForLeader returns the controller pod that holds the leader lease. A new leader can take a few seconds to
+// acquire it after the startup spec ends.
+func waitForLeader(ctx context.Context) string {
 	var leader string
 	Eventually(func() (string, error) {
 		pods, err := controllerPods(ctx)
 		leader, _ = newPodLeader(ctx, pods)
 		return leader, err
-	}).WithTimeout(2*time.Minute).WithPolling(pollInterval).ShouldNot(BeEmpty(), "no controller pod holds the leader lease")
+	}).WithTimeout(2*time.Minute).WithPolling(pollInterval).ShouldNot(BeEmpty(),
+		"no controller pod holds the leader lease")
+	return leader
+}
 
-	By(fmt.Sprintf("probing %d policies without churn", cfg.churnProbes))
-	idle := runProbes(ctx, "idle", idleProbeTimeout)
-	Expect(idle.failures).To(BeEmpty(), "new pods did not reach their PolicyEndpoints even without pod churn")
-
-	By(fmt.Sprintf("churning %d pods per second in namespace %s, each living %s", cfg.churnRate, churnNamespace(),
-		cfg.churnPodLifetime))
-	Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: churnNamespace()},
-	}))).To(Succeed())
-	DeferCleanup(func(ctx context.Context) {
-		By("deleting the churn namespace")
-		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: churnNamespace()},
-		}))).To(Succeed())
-	})
-	before, err := scrapeControllerMetrics(leader)
-	Expect(err).NotTo(HaveOccurred())
-	churn := startPodChurn()
-	DeferCleanup(churn.stop)
-
-	By(fmt.Sprintf("waiting %s for a slow pod event handler to fall behind", cfg.churnWarmup))
-	time.Sleep(cfg.churnWarmup)
-
-	By(fmt.Sprintf("probing the same policies while pods churn, allowing %s more than without churn", cfg.churnMaxDelay))
-	churning := runProbes(ctx, "churn", idle.percentile(100)+cfg.churnMaxDelay)
-	churned := churn.stop()
-
-	after, err := scrapeControllerMetrics(leader)
-	Expect(err).NotTo(HaveOccurred())
+// controllerPodRestarts returns the restart count of every controller pod that is not being deleted, keyed by UID, so
+// that a comparison catches both a restart and a replaced pod.
+func controllerPodRestarts(ctx context.Context) map[types.UID]int32 {
 	pods, err := controllerPods(ctx)
 	Expect(err).NotTo(HaveOccurred())
-	for i := range pods {
-		Expect(restartMessage(&pods[i])).To(BeEmpty(), "controller pod %s restarted during pod churn", pods[i].Name)
-	}
-
-	AddReportEntry("pod churn", fmt.Sprintf("scenario=%s churnPods=%d rate=%.1f/s lifetime=%s probes=%d "+
-		"idle(p50=%s max=%s) churn(resolved=%d p50=%s max=%s) controllerCPU=%.2f cores",
-		cfg.scenario, churned.created, float64(churned.created)/churned.duration.Seconds(), cfg.churnPodLifetime,
-		len(idle.latencies), idle.percentile(50), idle.percentile(100), len(churning.latencies),
-		churning.percentile(50), churning.percentile(100), (after.cpuSeconds-before.cpuSeconds)/churned.duration.Seconds()))
-	Expect(churning.failures).To(BeEmpty(), "new pods did not reach their PolicyEndpoints while pods churned")
-	Expect(churning.percentile(50)).To(BeNumerically("<=", idle.percentile(50)+cfg.churnMaxDelay),
-		"pod churn delayed the median pod to PolicyEndpoint time by more than %s", cfg.churnMaxDelay)
-}
-
-// idleProbeTimeout bounds a probe without churn. It only guards against a controller that never writes the
-// PolicyEndpoint; the spec's actual check is the delay churn adds on top of the times without churn.
-const idleProbeTimeout = 5 * time.Minute
-
-type probeKey struct {
-	probe int
-	kind  probeKind
-}
-
-type probeResults struct {
-	latencies map[probeKey]time.Duration
-	failures  []string
-}
-
-func (r probeResults) percentile(q int) time.Duration {
-	sorted := make([]time.Duration, 0, len(r.latencies))
-	for _, l := range r.latencies {
-		sorted = append(sorted, l)
-	}
-	slices.Sort(sorted)
-	return percentile(sorted, q)
-}
-
-// runProbes runs a target and a peer probe for each of cfg.churnProbes policies, each allowed timeout.
-func runProbes(ctx context.Context, phase string, timeout time.Duration) probeResults {
-	res := probeResults{latencies: map[probeKey]time.Duration{}}
-	for p := 0; p < cfg.churnProbes; p++ {
-		i := probePolicy(p)
-		for _, kind := range []probeKind{probeTarget, probePeer} {
-			key := probeKey{probe: p, kind: kind}
-			latency, err := probeLatency(ctx, i, phase, p, kind, timeout)
-			if err != nil {
-				res.failures = append(res.failures, err.Error())
-				continue
-			}
-			GinkgoWriter.Printf("%s %s probe %d for %s reached its PolicyEndpoint in %s\n", phase, kind, p, policyKey(i),
-				latency.Round(100*time.Millisecond))
-			res.latencies[key] = latency
+	restarts := map[types.UID]int32{}
+	for _, pod := range pods {
+		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		restarts[pod.UID] = 0
+		for _, cs := range pod.Status.ContainerStatuses {
+			restarts[pod.UID] += cs.RestartCount
 		}
 	}
-	return res
+	return restarts
 }
 
+type cpuSample struct {
+	seconds float64
+	at      time.Time
+	err     error
+}
+
+// scrapeLeaderCPU reads the leader's process CPU time. It is reported only, so a failed scrape is not an error.
+func scrapeLeaderCPU(leader string) cpuSample {
+	m, err := scrapeControllerMetrics(leader)
+	if err != nil {
+		GinkgoWriter.Printf("unable to read the metrics of %s: %v\n", leader, err)
+	}
+	return cpuSample{seconds: m.cpuSeconds, at: time.Now(), err: err}
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
+
+func roundDuration(d time.Duration) time.Duration {
+	return d.Round(100 * time.Millisecond)
+}
+
+// churnNamespace is outside the test namespace prefix (see isTestNamespace), since it holds no workload.
 func churnNamespace() string {
-	return cfg.namespace + "-churn"
+	return "churn-" + cfg.namespace
+}
+
+// createChurnNamespace creates the churn namespace once any previous one, from an earlier scenario or an interrupted
+// run, is gone; pods cannot be created in a namespace that is being deleted. The namespace carries no label: the
+// generated namespaceSelectors, including the broad policies' scaleTestLabel selector, must not select it.
+func createChurnNamespace(ctx context.Context) {
+	waitForNamespaceDeleted(ctx, churnNamespace())
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: churnNamespace()}}
+	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+}
+
+// deleteChurnNamespace deletes the churn pods without a grace period, then the namespace, and waits for it to be gone
+// so that the next scenario can create it again. It runs even when NPC_SCALE_KEEP_RESOURCES is set: the namespace
+// holds only churn pods, which the next run does not reuse.
+func deleteChurnNamespace() {
+	ctx := context.Background() // the spec's context is done by the time cleanup runs
+	By("deleting the churn namespace")
+	Expect(client.IgnoreNotFound(k8sClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(churnNamespace()),
+		client.MatchingLabels{churnLabel: "true"}, client.GracePeriodSeconds(0)))).To(Succeed())
+	Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: churnNamespace()},
+	}))).To(Succeed())
+	waitForNamespaceDeleted(ctx, churnNamespace())
+}
+
+func waitForNamespaceDeleted(ctx context.Context, name string) {
+	Eventually(func(ctx context.Context) (bool, error) {
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &corev1.Namespace{})
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}).WithContext(ctx).WithTimeout(namespaceDeleteTimeout).WithPolling(pollInterval).Should(BeTrue(),
+		"namespace %s was not deleted within %s", name, namespaceDeleteTimeout)
 }
 
 type probeKind string
 
 const (
-	// probeTarget is a pod that the policy selects through its podSelector, so it must appear in the policy's
+	// probeTarget is a pod that the policy selects through its podSelector; it must appear in the policy's
 	// podSelectorEndpoints.
 	probeTarget probeKind = "target"
-	// probePeer is a pod that the policy's ingress peer selects, so it must appear in the policy's ingress endpoints.
+	// probePeer is a pod that the policy's ingress peer selects; it must appear in the policy's ingress endpoints.
 	probePeer probeKind = "peer"
 )
 
-// probePolicy returns the index of the NetworkPolicy probed by probe p. Probes are spread over the policies and,
-// when the workload has them, use policies whose ingress peer has a namespaceSelector, which is the path the pod
-// handler pays for on every event.
-func probePolicy(p int) int {
-	start := (p*7919 + 13) % cfg.policies
-	for k := 0; k < cfg.policies; k++ {
-		i := (start + k) % cfg.policies
-		if !isANP(i) && (usesNamespaceSelector(i) || cfg.workload.nsSelectorPercent == 0) {
-			return i
+// probePolicies returns the indexes of cfg.churnProbes NetworkPolicies to probe, spread evenly over the workload. It
+// prefers policies whose ingress peer has a namespaceSelector, which is the work every pod event pays for, and skips
+// the spec when the workload has no NetworkPolicies.
+func probePolicies() []int {
+	var withNamespaceSelector, others []int
+	for i := 0; i < cfg.policies; i++ {
+		switch {
+		case isANP(i):
+		case !usesNamespaceSelector(i):
+			others = append(others, i)
+		case peerNamespaceExists(i):
+			withNamespaceSelector = append(withNamespaceSelector, i)
 		}
 	}
-	Fail("the workload has no NetworkPolicy to probe; NPC_SCALE_ANP_PERCENT must be below 100")
-	return 0
+	candidates := withNamespaceSelector
+	if len(candidates) == 0 {
+		candidates = others
+	}
+	if len(candidates) == 0 {
+		Skip("the workload has no NetworkPolicies to probe")
+	}
+	policies := make([]int, 0, cfg.churnProbes)
+	for p := 0; p < cfg.churnProbes; p++ {
+		policies = append(policies, candidates[p*len(candidates)/cfg.churnProbes])
+	}
+	return policies
+}
+
+// peerNamespaceExists reports whether a namespace in the group that policy i's namespaceSelector peer selects exists.
+// Namespace n belongs to group n % namespaceGroups (see newTestNamespace), so the group's first namespace is the
+// group number itself, which exists only when there are more namespaces than that.
+func peerNamespaceExists(i int) bool {
+	return (i+1)%cfg.workload.namespaceGroups < cfg.workload.namespaces
 }
 
 func policyKey(i int) types.NamespacedName {
 	return types.NamespacedName{Namespace: testNamespace(i), Name: fmt.Sprintf("scale-policy-%d", i)}
 }
 
-// probePod builds the probe pod of the given kind for policy i: for a target, a pod with the policy's app label in
-// its namespace; for a peer, a pod with the ingress peer's app label in a namespace the peer selects.
+// probePod builds probe p of the given kind and phase for policy i: for a target, a pod with the policy's app label in
+// its namespace; for a peer, a pod with the ingress peer's app label in a namespace the peer selects (see ingressPeer).
+// Each probe pod of a run gets its own kwok node, and so its own pod CIDR, so that a churn probe cannot be assigned
+// the IP of an idle probe whose deletion a slow controller has not processed yet.
 func probePod(i int, phase string, p int, kind probeKind) *corev1.Pod {
 	ns, app := testNamespace(i), appLabel(i)
 	if kind == probePeer {
 		app = nextApp(i, 1)
 		if usesNamespaceSelector(i) {
-			// Namespace n belongs to group n % namespaceGroups; pick the first one in the peer's group.
 			ns = testNamespace((i + 1) % cfg.workload.namespaceGroups)
 		}
 	}
-	// Every probe pod of a run gets its own kwok node, and so its own pod CIDR: a churn probe can never reuse the IP
-	// of an idle probe whose deletion a slow controller has not processed yet, which would look like a pass.
-	slot := 0
-	if phase != "idle" {
-		slot += 2
-	}
+	slot := p
 	if kind == probePeer {
-		slot++
+		slot += cfg.churnProbes
 	}
-	pod := newKwokPod(cfg.pods + slot*cfg.churnProbes + p)
+	if phase != "idle" {
+		slot += 2 * cfg.churnProbes
+	}
+	pod := newKwokPod(cfg.pods + slot)
 	pod.Name = fmt.Sprintf("scale-probe-%s-%s-%d", phase, kind, p)
 	pod.Namespace = ns
 	pod.Labels = map[string]string{appLabelKey: app, scaleTestLabel: "true"}
 	return pod
 }
 
+type probeResults struct {
+	latencies []time.Duration // sorted
+	failures  []string
+}
+
+func (r probeResults) median() time.Duration { return nearestRank(r.latencies, 50) }
+
+func (r probeResults) max() time.Duration { return nearestRank(r.latencies, 100) }
+
+// nearestRank returns the q-th percentile of sorted, or 0 when it is empty.
+func nearestRank(sorted []time.Duration, q int) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := (len(sorted)*q + 99) / 100
+	return sorted[min(max(idx-1, 0), len(sorted)-1)]
+}
+
+// runProbes runs a target and a peer probe for each policy, each allowed timeout, and stops at the first failure when
+// stopAtFirstFailure is set.
+func runProbes(ctx context.Context, phase string, policies []int, timeout time.Duration,
+	stopAtFirstFailure bool) probeResults {
+	var res probeResults
+	for p, i := range policies {
+		for _, kind := range []probeKind{probeTarget, probePeer} {
+			latency, err := probeLatency(ctx, i, phase, p, kind, timeout)
+			if err != nil {
+				res.failures = append(res.failures, err.Error())
+				if stopAtFirstFailure {
+					return res
+				}
+				continue
+			}
+			GinkgoWriter.Printf("%s %s probe %d for %s reached its PolicyEndpoint in %s\n", phase, kind, p,
+				policyKey(i), roundDuration(latency))
+			res.latencies = append(res.latencies, latency)
+		}
+	}
+	slices.Sort(res.latencies)
+	return res
+}
+
 // probeLatency creates the probe pod, waits for its IP, and returns how long the IP took to appear in the
-// PolicyEndpoints of policy i, failing after timeout. The pod is deleted afterwards.
-func probeLatency(ctx context.Context, i int, phase string, p int, kind probeKind, timeout time.Duration) (time.Duration, error) {
-	// Resolve which PolicyEndpoints to watch before the probe exists, so the time below only covers the controller.
+// PolicyEndpoints of policy i, or an error after timeout. The pod is deleted afterwards.
+func probeLatency(ctx context.Context, i int, phase string, p int, kind probeKind,
+	timeout time.Duration) (time.Duration, error) {
+	// Find the PolicyEndpoints to watch before the probe exists, so the measured time only covers the controller.
 	names, err := policyEndpointNames(ctx, policyKey(i))
 	if err != nil {
 		return 0, fmt.Errorf("finding the PolicyEndpoints of %s: %w", policyKey(i), err)
 	}
 	pod := probePod(i, phase, p, kind)
+	key := client.ObjectKeyFromObject(pod)
+	// A probe pod left by an interrupted run would make Create fail.
+	if err := deletePodAndWait(ctx, key); err != nil {
+		return 0, err
+	}
 	if err := k8sClient.Create(ctx, pod); err != nil {
-		return 0, fmt.Errorf("creating %s probe %d: %w", kind, p, err)
+		return 0, fmt.Errorf("creating %s probe %s: %w", kind, key, err)
 	}
 	defer func() {
-		_ = client.IgnoreNotFound(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))
+		_ = client.IgnoreNotFound(k8sClient.Delete(context.Background(), pod, client.GracePeriodSeconds(0)))
 	}()
 
-	var ip string
-	Eventually(func() (string, error) {
-		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
-		ip = pod.Status.PodIP
-		return ip, err
-	}).WithTimeout(time.Minute).WithPolling(200*time.Millisecond).ShouldNot(BeEmpty(),
-		"kwok did not assign an IP to probe pod %s", client.ObjectKeyFromObject(pod))
-
+	ip, err := waitForPodIP(ctx, key)
+	if err != nil {
+		return 0, err
+	}
 	start := time.Now()
-	deadline := start.Add(timeout)
-	for polls := 1; time.Now().Before(deadline); polls++ {
+	for polls := 1; time.Since(start) < timeout && ctx.Err() == nil; polls++ {
 		found, err := policyEndpointsContain(ctx, policyKey(i).Namespace, names, ip, kind)
 		if err != nil {
 			GinkgoWriter.Printf("reading the PolicyEndpoints of %s: %v\n", policyKey(i), err)
@@ -247,21 +370,46 @@ func probeLatency(ctx context.Context, i int, phase string, p int, kind probeKin
 		if found {
 			return time.Since(start), nil
 		}
-		time.Sleep(500 * time.Millisecond)
-		// The controller adds a PolicyEndpoint when a policy's endpoints outgrow a chunk; pick it up.
+		sleepWithContext(ctx, 500*time.Millisecond)
+		// The controller adds a PolicyEndpoint when a policy's endpoints outgrow a chunk.
 		if polls%20 == 0 {
 			if refreshed, err := policyEndpointNames(ctx, policyKey(i)); err == nil {
 				names = refreshed
 			}
 		}
 	}
-	return 0, fmt.Errorf("%s probe %s (IP %s) was not in the PolicyEndpoints of %s after %s", kind,
-		client.ObjectKeyFromObject(pod), ip, policyKey(i), timeout.Round(100*time.Millisecond))
+	return 0, fmt.Errorf("%s probe %s (IP %s) was not in the PolicyEndpoints of %s within %s", kind, key, ip,
+		policyKey(i), roundDuration(timeout))
 }
 
-// policyEndpointNames returns the names of the PolicyEndpoints owned by the policy. It lists metadata only: a full
-// list returns every endpoint of every policy in the namespace, which takes tens of seconds when one namespace holds
-// all of the workload's policies.
+// deletePodAndWait deletes the pod without a grace period if it exists, and waits until it is gone.
+func deletePodAndWait(ctx context.Context, key types.NamespacedName) error {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+	if err := client.IgnoreNotFound(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))); err != nil {
+		return fmt.Errorf("deleting pod %s: %w", key, err)
+	}
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); sleepWithContext(ctx, time.Second) {
+		if err := k8sClient.Get(ctx, key, &corev1.Pod{}); apierrors.IsNotFound(err) {
+			return nil
+		}
+	}
+	return fmt.Errorf("pod %s was not deleted within 1m", key)
+}
+
+func waitForPodIP(ctx context.Context, key types.NamespacedName) (string, error) {
+	deadline := time.Now().Add(time.Minute)
+	for ; time.Now().Before(deadline); sleepWithContext(ctx, 200*time.Millisecond) {
+		pod := &corev1.Pod{}
+		if err := k8sClient.Get(ctx, key, pod); err == nil && pod.Status.PodIP != "" {
+			return pod.Status.PodIP, nil
+		}
+	}
+	return "", fmt.Errorf("kwok did not assign an IP to probe pod %s within 1m", key)
+}
+
+// policyEndpointNames returns the names of the PolicyEndpoints that the NetworkPolicy owns. It lists metadata only:
+// listing full PolicyEndpoints returns every endpoint of every policy in the namespace, which takes minutes when one
+// namespace holds the whole workload.
 func policyEndpointNames(ctx context.Context, policy types.NamespacedName) ([]string, error) {
 	pes := &metav1.PartialObjectMetadataList{}
 	pes.SetGroupVersionKind(policyinfo.GroupVersion.WithKind("PolicyEndpointList"))
@@ -279,9 +427,10 @@ func policyEndpointNames(ctx context.Context, policy types.NamespacedName) ([]st
 	return names, nil
 }
 
-// policyEndpointsContain reports whether any of the named PolicyEndpoints lists ip as a selected pod (target) or as
-// an ingress peer (peer).
-func policyEndpointsContain(ctx context.Context, namespace string, names []string, ip string, kind probeKind) (bool, error) {
+// policyEndpointsContain reports whether one of the named PolicyEndpoints lists ip as a selected pod (target) or as an
+// ingress peer (peer). Pod IPs are written without a prefix length.
+func policyEndpointsContain(ctx context.Context, namespace string, names []string, ip string,
+	kind probeKind) (bool, error) {
 	for _, name := range names {
 		pe := &policyinfo.PolicyEndpoint{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, pe); err != nil {
@@ -299,8 +448,7 @@ func policyEndpointsContain(ctx context.Context, namespace string, names []strin
 			continue
 		}
 		for _, ep := range pe.Spec.Ingress {
-			// Peer pod IPs are written without a prefix length.
-			if string(ep.CIDR) == ip || strings.TrimSuffix(string(ep.CIDR), "/32") == ip {
+			if string(ep.CIDR) == ip {
 				return true, nil
 			}
 		}
@@ -309,80 +457,104 @@ func policyEndpointsContain(ctx context.Context, namespace string, names []strin
 }
 
 type churnResult struct {
-	created  int
+	created  int64
+	failed   int64
 	duration time.Duration
 }
 
-type podChurn struct {
-	stopCh  chan struct{}
-	done    chan churnResult
-	once    sync.Once
-	stopped churnResult
+func (r churnResult) rate() float64 {
+	if r.duration <= 0 {
+		return 0
+	}
+	return float64(r.created) / r.duration.Seconds()
 }
 
-// startPodChurn creates cfg.churnRate pods per second in the churn namespace and deletes each one once it has lived
-// cfg.churnPodLifetime. The pods carry no label that a generated policy selects.
+type churnPod struct {
+	pod     *corev1.Pod
+	created time.Time
+}
+
+type podChurn struct {
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	start   time.Time
+	created atomic.Int64
+	failed  atomic.Int64
+	once    sync.Once
+	result  churnResult
+}
+
+// startPodChurn creates cfg.churnRate pods per second in the churn namespace and deletes each one after
+// cfg.churnPodLifetime. Creates and deletes run on churnWorkers goroutines each, paced by a rate limiter, so that the
+// rate holds when API requests are slow. A create that fails is counted; the spec checks the rate actually reached.
 func startPodChurn() *podChurn {
-	c := &podChurn{stopCh: make(chan struct{}), done: make(chan churnResult, 1)}
-	go func() {
-		defer GinkgoRecover()
-		ctx := context.Background()
-		type live struct {
-			pod     *corev1.Pod
-			created time.Time
-		}
-		var (
-			alive []live
-			n     int
-			start = time.Now()
-		)
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-c.stopCh:
-				c.done <- churnResult{created: n, duration: time.Since(start)}
-				return
-			case <-ticker.C:
-			}
-			for k := 0; k < cfg.churnRate; k++ {
-				pod := newKwokPod(n)
-				pod.Name = fmt.Sprintf("scale-churn-%d", n)
-				pod.Namespace = churnNamespace()
-				pod.Labels = map[string]string{appLabelKey: "churn", churnLabel: "true"}
-				n++
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &podChurn{cancel: cancel, start: time.Now()}
+	limiter := rate.NewLimiter(rate.Limit(cfg.churnRate), 1)
+	alive := make(chan churnPod, cfg.churnRate*(int(cfg.churnPodLifetime.Seconds())+2))
+	var next atomic.Int64
+	for w := 0; w < churnWorkers; w++ {
+		c.wg.Add(2)
+		go func() {
+			defer GinkgoRecover()
+			defer c.wg.Done()
+			for limiter.Wait(ctx) == nil {
+				pod := newChurnPod(int(next.Add(1) - 1))
 				if err := k8sClient.Create(ctx, pod); err != nil {
-					GinkgoWriter.Printf("creating churn pod %s: %v\n", pod.Name, err)
+					if ctx.Err() == nil {
+						c.failed.Add(1)
+						GinkgoWriter.Printf("creating churn pod %s: %v\n", pod.Name, err)
+					}
 					continue
 				}
-				alive = append(alive, live{pod: pod, created: time.Now()})
-			}
-			for len(alive) > 0 && time.Since(alive[0].created) >= cfg.churnPodLifetime {
-				if err := client.IgnoreNotFound(k8sClient.Delete(ctx, alive[0].pod, client.GracePeriodSeconds(0))); err != nil {
-					GinkgoWriter.Printf("deleting churn pod %s: %v\n", alive[0].pod.Name, err)
+				c.created.Add(1)
+				select {
+				case alive <- churnPod{pod: pod, created: time.Now()}:
+				case <-ctx.Done():
+					return
 				}
-				alive = alive[1:]
 			}
-		}
-	}()
+		}()
+		go func() {
+			defer GinkgoRecover()
+			defer c.wg.Done()
+			for {
+				var p churnPod
+				select {
+				case p = <-alive:
+				case <-ctx.Done():
+					return
+				}
+				sleepWithContext(ctx, time.Until(p.created.Add(cfg.churnPodLifetime)))
+				if ctx.Err() != nil {
+					return
+				}
+				err := client.IgnoreNotFound(k8sClient.Delete(ctx, p.pod, client.GracePeriodSeconds(0)))
+				if err != nil && ctx.Err() == nil {
+					GinkgoWriter.Printf("deleting churn pod %s: %v\n", p.pod.Name, err)
+				}
+			}
+		}()
+	}
 	return c
 }
 
-// stop ends the churn and returns how many pods it created over how long. It is safe to call more than once.
+// stop ends the churn and returns how many pods it created over how long. Pods still alive are left for
+// deleteChurnNamespace. It is safe to call more than once.
 func (c *podChurn) stop() churnResult {
 	c.once.Do(func() {
-		close(c.stopCh)
-		c.stopped = <-c.done
+		c.cancel()
+		c.wg.Wait()
+		c.result = churnResult{created: c.created.Load(), failed: c.failed.Load(), duration: time.Since(c.start)}
 	})
-	return c.stopped
+	return c.result
 }
 
-// percentile returns the q-th percentile of sorted durations, or 0 when there are none.
-func percentile(sorted []time.Duration, q int) time.Duration {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := (len(sorted)*q + 99) / 100
-	idx = min(max(idx-1, 0), len(sorted)-1)
-	return sorted[idx].Round(100 * time.Millisecond)
+// newChurnPod builds churn pod n. It carries churnLabel and no label that a generated policy selects.
+func newChurnPod(n int) *corev1.Pod {
+	pod := newKwokPod(n)
+	pod.Name = fmt.Sprintf("scale-churn-%d", n)
+	pod.Namespace = churnNamespace()
+	pod.Labels = map[string]string{appLabelKey: "churn", churnLabel: "true"}
+	return pod
 }
