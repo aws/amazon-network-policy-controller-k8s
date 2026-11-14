@@ -228,11 +228,13 @@ func (m *mockPolicyTracker) GetApplicationNetworkPoliciesWithEgressRules() sets.
 	return sets.Set[types.NamespacedName]{}
 }
 
-func (m *mockPolicyTracker) GetNamespaceSelectorPeers(types.NamespacedName) ([]resolvers.PeerSelectors, bool) {
+func (m *mockPolicyTracker) GetPolicyNamespaceSelectorPeers(
+	types.NamespacedName) ([]resolvers.NamespaceSelectorPeer, bool) {
 	return nil, false
 }
 
-func (m *mockPolicyTracker) GetANPNamespaceSelectorPeers(types.NamespacedName) ([]resolvers.PeerSelectors, bool) {
+func (m *mockPolicyTracker) GetApplicationNetworkPolicyNamespaceSelectorPeers(
+	types.NamespacedName) ([]resolvers.NamespaceSelectorPeer, bool) {
 	return nil, false
 }
 
