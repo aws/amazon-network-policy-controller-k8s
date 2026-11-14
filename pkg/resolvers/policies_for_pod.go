@@ -45,6 +45,10 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 	// informer's single event-delivery goroutine for every pod event, so it must stay cheap: the pod's Namespace
 	// is read once, the peers' selectors come pre-parsed from the tracker, and the policy object itself is only
 	// read for the policies that match (it is what the caller enqueues).
+	//
+	// The policy event handler replaces a policy's parsed peers before it enqueues the policy, so a pod event that
+	// races a policy update and still sees the previous peers is covered by that policy's own pending reconcile,
+	// which resolves every pod from the cache.
 	var nsLabels labels.Set
 	nsLoaded, nsFound := false, false
 	for _, ref := range r.policyTracker.GetPoliciesWithNamespaceReferences().UnsortedList() {
