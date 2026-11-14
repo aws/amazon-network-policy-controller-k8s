@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
+	networking "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,30 +60,34 @@ const (
 // than the event rate builds a backlog that only grows, and new pods stop reaching their PolicyEndpoints while
 // reconciles, the work queue, the lease and the health checks all look healthy.
 //
-// The spec first measures how long probe pods take to reach their policy's PolicyEndpoints without churn: one pod
-// selected by the policy's podSelector and one selected by its ingress peer, for NPC_CHURN_PROBES policies. That time
-// depends on the workload; in baseline a probe pod is selected by hundreds of policies and waits for all of their
-// PolicyEndpoint writes at the controller's API client rate limit. It then churns pods in a namespace that no generated
-// policy selects. Each churn pod costs the handler the same as any other pod event but changes no PolicyEndpoint.
-// After NPC_CHURN_WARMUP it repeats the probes, and fails if the slowest one is more than NPC_CHURN_MAX_DELAY slower
-// than the slowest without churn, if the median rises by more than NPC_CHURN_MAX_DELAY, if the churn did not reach
-// minChurnRateFraction of NPC_CHURN_RATE, or if a controller pod restarted or was replaced.
+// The spec creates a probe NetworkPolicy in its own namespace, with a namespaceSelector ingress peer that selects a
+// second probe namespace, and measures how long probe pods take to appear in its PolicyEndpoints without churn: a
+// target pod selected by its podSelector and a peer pod, in the other namespace, selected by its ingress peer. No other
+// policy selects either pod, so that time is the pod event handling plus one reconcile, whatever the workload. It
+// then churns pods in a namespace that no generated policy selects: each churn pod costs the pod event handler the
+// same as any other pod event but changes no PolicyEndpoint. After NPC_CHURN_WARMUP it repeats the probes, and fails
+// if the slowest one is more than NPC_CHURN_MAX_DELAY slower than the slowest without churn, if the median rises by
+// more than NPC_CHURN_MAX_DELAY, if the churn did not reach minChurnRateFraction of NPC_CHURN_RATE, or if a controller
+// pod restarted or was replaced.
 func expectPodsResolvedUnderChurn(ctx context.Context) {
 	if cfg.churnRate <= 0 {
 		Skip("NPC_CHURN_RATE is 0")
 	}
-	policies := probePolicies()
 	leader := waitForLeader(ctx)
 
-	By(fmt.Sprintf("probing %d policies without pod churn", len(policies)))
-	idle := runProbes(ctx, "idle", policies, idleProbeTimeout, true)
+	By("creating the probe policy")
+	createProbePolicy(ctx)
+	DeferCleanup(deleteProbeNamespaces)
+
+	By(fmt.Sprintf("probing the probe policy %d times without pod churn", cfg.churnProbes))
+	idle := runProbes(ctx, "idle", idleProbeTimeout, true)
 	Expect(idle.failures).To(BeEmpty(), "new pods did not reach their PolicyEndpoints even without pod churn")
 
 	controllers := controllerPodRestarts(ctx)
 	By(fmt.Sprintf("churning %d pods per second in namespace %s, each living %s", cfg.churnRate, churnNamespace(),
 		cfg.churnPodLifetime))
-	createChurnNamespace(ctx)
-	DeferCleanup(deleteChurnNamespace)
+	createNamespace(ctx, churnNamespace(), nil)
+	DeferCleanup(func() { deleteNamespace(churnNamespace(), churnLabel) })
 	churn := startPodChurn()
 	DeferCleanup(func() { churn.stop() })
 	before := scrapeLeaderCPU(leader)
@@ -91,8 +96,8 @@ func expectPodsResolvedUnderChurn(ctx context.Context) {
 	sleepWithContext(ctx, cfg.churnWarmup)
 
 	bound := idle.max() + cfg.churnMaxDelay
-	By(fmt.Sprintf("probing the same policies while pods churn, allowing each probe %s", bound.Round(time.Second)))
-	churning := runProbes(ctx, "churn", policies, bound+churnProbeGrace, false)
+	By(fmt.Sprintf("probing the probe policy while pods churn, allowing each probe %s", roundDuration(bound)))
+	churning := runProbes(ctx, "churn", bound+churnProbeGrace, false)
 	churned := churn.stop()
 
 	after := scrapeLeaderCPU(leader)
@@ -104,7 +109,7 @@ func expectPodsResolvedUnderChurn(ctx context.Context) {
 	AddReportEntry("pod churn", fmt.Sprintf("scenario=%s churnPods=%d churnFailures=%d rate=%.1f/s lifetime=%s "+
 		"idle(probes=%d p50=%s max=%s) churn(resolved=%d of %d, p50=%s max=%s, bound=%s) leader=%s leaderCPU=%s",
 		cfg.scenario, churned.created, churned.failed, churned.rate(), cfg.churnPodLifetime, len(idle.latencies),
-		roundDuration(idle.median()), roundDuration(idle.max()), len(churning.latencies), 2*len(policies),
+		roundDuration(idle.median()), roundDuration(idle.max()), len(churning.latencies), 2*cfg.churnProbes,
 		roundDuration(churning.median()), roundDuration(churning.max()), roundDuration(bound), leaderAfter, cpu))
 
 	Expect(controllerPodRestarts(ctx)).To(Equal(controllers),
@@ -179,32 +184,56 @@ func roundDuration(d time.Duration) time.Duration {
 	return d.Round(100 * time.Millisecond)
 }
 
-// churnNamespace is outside the test namespace prefix (see isTestNamespace), since it holds no workload.
+// churnNamespace, probeNamespace and probePeerNamespace are outside the test namespace prefix (see isTestNamespace),
+// since they hold no workload, and carry no label that a generated namespaceSelector selects. In particular they do not
+// carry scaleTestLabel, which the broad policies select.
 func churnNamespace() string {
 	return "churn-" + cfg.namespace
 }
 
-// createChurnNamespace creates the churn namespace once any previous one, from an earlier scenario or an interrupted
-// run, is gone; pods cannot be created in a namespace that is being deleted. The namespace carries no label: the
-// generated namespaceSelectors, including the broad policies' scaleTestLabel selector, must not select it.
-func createChurnNamespace(ctx context.Context) {
-	waitForNamespaceDeleted(ctx, churnNamespace())
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: churnNamespace()}}
+func probeNamespace() string {
+	return "probe-" + cfg.namespace
+}
+
+func probePeerNamespace() string {
+	return "probe-peer-" + cfg.namespace
+}
+
+const (
+	probePolicyName = "churn-probe"
+	probeTargetApp  = "churn-probe-target"
+	probePeerApp    = "churn-probe-peer"
+)
+
+// createNamespace creates the namespace once any previous one, from an earlier scenario or an interrupted run, is
+// gone, since pods cannot be created in a namespace that is being deleted.
+func createNamespace(ctx context.Context, name string, nsLabels map[string]string) {
+	waitForNamespaceDeleted(ctx, name)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: nsLabels}}
 	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 }
 
-// deleteChurnNamespace deletes the churn pods without a grace period, then the namespace, and waits for it to be gone
-// so that the next scenario can create it again. It runs even when NPC_SCALE_KEEP_RESOURCES is set: the namespace
-// holds only churn pods, which the next run does not reuse.
-func deleteChurnNamespace() {
+// deleteNamespace deletes the pods carrying podLabel without a grace period, removes the finalizers of the
+// NetworkPolicies, deletes the namespace and waits for it to be gone, so that the next scenario can create it again.
+// It runs even when NPC_SCALE_KEEP_RESOURCES is set: these namespaces hold only what the pod churn spec created, which
+// the next run does not reuse.
+func deleteNamespace(name, podLabel string) {
 	ctx := context.Background() // the spec's context is done by the time cleanup runs
-	By("deleting the churn namespace")
-	Expect(client.IgnoreNotFound(k8sClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(churnNamespace()),
-		client.MatchingLabels{churnLabel: "true"}, client.GracePeriodSeconds(0)))).To(Succeed())
+	By("deleting namespace " + name)
+	Expect(client.IgnoreNotFound(k8sClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(name),
+		client.MatchingLabels{podLabel: "true"}, client.GracePeriodSeconds(0)))).To(Succeed())
+	policies := &networking.NetworkPolicyList{}
+	Expect(k8sClient.List(ctx, policies, client.InNamespace(name))).To(Succeed())
+	for i := range policies.Items {
+		policy := &policies.Items[i]
+		patch := client.MergeFrom(policy.DeepCopy())
+		policy.SetFinalizers(nil)
+		Expect(client.IgnoreNotFound(k8sClient.Patch(ctx, policy, patch))).To(Succeed())
+	}
 	Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: churnNamespace()},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}))).To(Succeed())
-	waitForNamespaceDeleted(ctx, churnNamespace())
+	waitForNamespaceDeleted(ctx, name)
 }
 
 func waitForNamespaceDeleted(ctx context.Context, name string) {
@@ -218,78 +247,65 @@ func waitForNamespaceDeleted(ctx context.Context, name string) {
 		"namespace %s was not deleted within %s", name, namespaceDeleteTimeout)
 }
 
+// createProbePolicy creates the probe namespaces and the probe NetworkPolicy: in probeNamespace, it selects app
+// probeTargetApp pods and accepts ingress from app probePeerApp pods in namespaces labelled probeLabel, which only
+// probePeerNamespace is. It waits for the policy's first PolicyEndpoint.
+func createProbePolicy(ctx context.Context) {
+	createNamespace(ctx, probeNamespace(), nil)
+	createNamespace(ctx, probePeerNamespace(), map[string]string{probeLabel: "true"})
+	policy := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: probePolicyName, Namespace: probeNamespace()},
+		Spec: networking.NetworkPolicySpec{
+			PodSelector: *appSelector(probeTargetApp),
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+			Ingress: []networking.NetworkPolicyIngressRule{{From: []networking.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{probeLabel: "true"}},
+				PodSelector:       appSelector(probePeerApp),
+			}}}},
+		},
+	}
+	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+	Eventually(func(ctx context.Context) ([]string, error) {
+		return policyEndpointNames(ctx, probePolicyKey())
+	}).WithContext(ctx).WithTimeout(2*time.Minute).WithPolling(time.Second).ShouldNot(BeEmpty(),
+		"the probe policy has no PolicyEndpoint")
+}
+
+func deleteProbeNamespaces() {
+	deleteNamespace(probeNamespace(), probeLabel)
+	deleteNamespace(probePeerNamespace(), probeLabel)
+}
+
+func probePolicyKey() types.NamespacedName {
+	return types.NamespacedName{Namespace: probeNamespace(), Name: probePolicyName}
+}
+
 type probeKind string
 
 const (
-	// probeTarget is a pod that the policy selects through its podSelector; it must appear in the policy's
+	// probeTarget is a pod that the probe policy selects through its podSelector; it must appear in the policy's
 	// podSelectorEndpoints.
 	probeTarget probeKind = "target"
-	// probePeer is a pod that the policy's ingress peer selects; it must appear in the policy's ingress endpoints.
+	// probePeer is a pod in another namespace that the probe policy's ingress peer selects; it must appear in the
+	// policy's ingress endpoints. Resolving it goes through the policies with namespace references.
 	probePeer probeKind = "peer"
 )
 
-// probePolicies returns the indexes of cfg.churnProbes NetworkPolicies to probe, spread evenly over the workload. It
-// prefers policies whose ingress peer has a namespaceSelector, which is the work every pod event pays for, and skips
-// the spec when the workload has no NetworkPolicies.
-func probePolicies() []int {
-	var withNamespaceSelector, others []int
-	for i := 0; i < cfg.policies; i++ {
-		switch {
-		case isANP(i):
-		case !usesNamespaceSelector(i):
-			others = append(others, i)
-		case peerNamespaceExists(i):
-			withNamespaceSelector = append(withNamespaceSelector, i)
-		}
-	}
-	candidates := withNamespaceSelector
-	if len(candidates) == 0 {
-		candidates = others
-	}
-	if len(candidates) == 0 {
-		Skip("the workload has no NetworkPolicies to probe")
-	}
-	policies := make([]int, 0, cfg.churnProbes)
-	for p := 0; p < cfg.churnProbes; p++ {
-		policies = append(policies, candidates[p*len(candidates)/cfg.churnProbes])
-	}
-	return policies
-}
-
-// peerNamespaceExists reports whether a namespace in the group that policy i's namespaceSelector peer selects exists.
-// Namespace n belongs to group n % namespaceGroups (see newTestNamespace), so the group's first namespace is the
-// group number itself, which exists only when there are more namespaces than that.
-func peerNamespaceExists(i int) bool {
-	return (i+1)%cfg.workload.namespaceGroups < cfg.workload.namespaces
-}
-
-func policyKey(i int) types.NamespacedName {
-	return types.NamespacedName{Namespace: testNamespace(i), Name: fmt.Sprintf("scale-policy-%d", i)}
-}
-
-// probePod builds probe p of the given kind and phase for policy i: for a target, a pod with the policy's app label in
-// its namespace; for a peer, a pod with the ingress peer's app label in a namespace the peer selects (see ingressPeer).
-// Each probe pod of a run gets its own kwok node, and so its own pod CIDR, so that a churn probe cannot be assigned
-// the IP of an idle probe whose deletion a slow controller has not processed yet.
-func probePod(i int, phase string, p int, kind probeKind) *corev1.Pod {
-	ns, app := testNamespace(i), appLabel(i)
+// probePod builds probe p of the given kind and phase. Each probe pod of a run gets its own kwok node, and so its own
+// pod CIDR, so that a churn probe cannot be assigned the IP of an idle probe whose deletion a slow controller has not
+// processed yet.
+func probePod(phase string, p int, kind probeKind) *corev1.Pod {
+	ns, app, slot := probeNamespace(), probeTargetApp, p
 	if kind == probePeer {
-		app = nextApp(i, 1)
-		if usesNamespaceSelector(i) {
-			ns = testNamespace((i + 1) % cfg.workload.namespaceGroups)
-		}
-	}
-	slot := p
-	if kind == probePeer {
-		slot += cfg.churnProbes
+		ns, app, slot = probePeerNamespace(), probePeerApp, p+cfg.churnProbes
 	}
 	if phase != "idle" {
 		slot += 2 * cfg.churnProbes
 	}
 	pod := newKwokPod(cfg.pods + slot)
-	pod.Name = fmt.Sprintf("scale-probe-%s-%s-%d", phase, kind, p)
+	pod.Name = fmt.Sprintf("probe-%s-%s-%d", phase, kind, p)
 	pod.Namespace = ns
-	pod.Labels = map[string]string{appLabelKey: app, scaleTestLabel: "true"}
+	pod.Labels = map[string]string{appLabelKey: app, probeLabel: "true"}
 	return pod
 }
 
@@ -311,14 +327,13 @@ func nearestRank(sorted []time.Duration, q int) time.Duration {
 	return sorted[min(max(idx-1, 0), len(sorted)-1)]
 }
 
-// runProbes runs a target and a peer probe for each policy, each allowed timeout, and stops at the first failure when
+// runProbes runs cfg.churnProbes target and peer probes, each allowed timeout, and stops at the first failure when
 // stopAtFirstFailure is set.
-func runProbes(ctx context.Context, phase string, policies []int, timeout time.Duration,
-	stopAtFirstFailure bool) probeResults {
+func runProbes(ctx context.Context, phase string, timeout time.Duration, stopAtFirstFailure bool) probeResults {
 	var res probeResults
-	for p, i := range policies {
+	for p := 0; p < cfg.churnProbes; p++ {
 		for _, kind := range []probeKind{probeTarget, probePeer} {
-			latency, err := probeLatency(ctx, i, phase, p, kind, timeout)
+			latency, err := probeLatency(ctx, phase, p, kind, timeout)
 			if err != nil {
 				res.failures = append(res.failures, err.Error())
 				if stopAtFirstFailure {
@@ -326,8 +341,8 @@ func runProbes(ctx context.Context, phase string, policies []int, timeout time.D
 				}
 				continue
 			}
-			GinkgoWriter.Printf("%s %s probe %d for %s reached its PolicyEndpoint in %s\n", phase, kind, p,
-				policyKey(i), roundDuration(latency))
+			GinkgoWriter.Printf("%s %s probe %d reached the probe policy's PolicyEndpoints in %s\n", phase, kind, p,
+				roundDuration(latency))
 			res.latencies = append(res.latencies, latency)
 		}
 	}
@@ -335,16 +350,17 @@ func runProbes(ctx context.Context, phase string, policies []int, timeout time.D
 	return res
 }
 
-// probeLatency creates the probe pod, waits for its IP, and returns how long the IP took to appear in the
-// PolicyEndpoints of policy i, or an error after timeout. The pod is deleted afterwards.
-func probeLatency(ctx context.Context, i int, phase string, p int, kind probeKind,
-	timeout time.Duration) (time.Duration, error) {
+// probeLatency creates the probe pod, waits for its IP, and returns how long the IP took to appear in the probe
+// policy's PolicyEndpoints, or an error after timeout. The pod is deleted afterwards.
+func probeLatency(ctx context.Context, phase string, p int, kind probeKind, timeout time.Duration) (time.Duration,
+	error) {
 	// Find the PolicyEndpoints to watch before the probe exists, so the measured time only covers the controller.
-	names, err := policyEndpointNames(ctx, policyKey(i))
+	policy := probePolicyKey()
+	names, err := policyEndpointNames(ctx, policy)
 	if err != nil {
-		return 0, fmt.Errorf("finding the PolicyEndpoints of %s: %w", policyKey(i), err)
+		return 0, fmt.Errorf("finding the PolicyEndpoints of %s: %w", policy, err)
 	}
-	pod := probePod(i, phase, p, kind)
+	pod := probePod(phase, p, kind)
 	key := client.ObjectKeyFromObject(pod)
 	// A probe pod left by an interrupted run would make Create fail.
 	if err := deletePodAndWait(ctx, key); err != nil {
@@ -363,9 +379,9 @@ func probeLatency(ctx context.Context, i int, phase string, p int, kind probeKin
 	}
 	start := time.Now()
 	for polls := 1; time.Since(start) < timeout && ctx.Err() == nil; polls++ {
-		found, err := policyEndpointsContain(ctx, policyKey(i).Namespace, names, ip, kind)
+		found, err := policyEndpointsContain(ctx, policy.Namespace, names, ip, kind)
 		if err != nil {
-			GinkgoWriter.Printf("reading the PolicyEndpoints of %s: %v\n", policyKey(i), err)
+			GinkgoWriter.Printf("reading the PolicyEndpoints of %s: %v\n", policy, err)
 		}
 		if found {
 			return time.Since(start), nil
@@ -373,13 +389,13 @@ func probeLatency(ctx context.Context, i int, phase string, p int, kind probeKin
 		sleepWithContext(ctx, 500*time.Millisecond)
 		// The controller adds a PolicyEndpoint when a policy's endpoints outgrow a chunk.
 		if polls%20 == 0 {
-			if refreshed, err := policyEndpointNames(ctx, policyKey(i)); err == nil {
+			if refreshed, err := policyEndpointNames(ctx, policy); err == nil {
 				names = refreshed
 			}
 		}
 	}
 	return 0, fmt.Errorf("%s probe %s (IP %s) was not in the PolicyEndpoints of %s within %s", kind, key, ip,
-		policyKey(i), roundDuration(timeout))
+		policy, roundDuration(timeout))
 }
 
 // deletePodAndWait deletes the pod without a grace period if it exists, and waits until it is gone.
@@ -407,9 +423,7 @@ func waitForPodIP(ctx context.Context, key types.NamespacedName) (string, error)
 	return "", fmt.Errorf("kwok did not assign an IP to probe pod %s within 1m", key)
 }
 
-// policyEndpointNames returns the names of the PolicyEndpoints that the NetworkPolicy owns. It lists metadata only:
-// listing full PolicyEndpoints returns every endpoint of every policy in the namespace, which takes minutes when one
-// namespace holds the whole workload.
+// policyEndpointNames returns the names of the PolicyEndpoints that the NetworkPolicy owns. It lists metadata only.
 func policyEndpointNames(ctx context.Context, policy types.NamespacedName) ([]string, error) {
 	pes := &metav1.PartialObjectMetadataList{}
 	pes.SetGroupVersionKind(policyinfo.GroupVersion.WithKind("PolicyEndpointList"))
@@ -540,7 +554,7 @@ func startPodChurn() *podChurn {
 }
 
 // stop ends the churn and returns how many pods it created over how long. Pods still alive are left for
-// deleteChurnNamespace. It is safe to call more than once.
+// deleteNamespace. It is safe to call more than once.
 func (c *podChurn) stop() churnResult {
 	c.once.Do(func() {
 		c.cancel()

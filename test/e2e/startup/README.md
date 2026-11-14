@@ -41,11 +41,11 @@ rate builds a backlog that only grows, and new pods stop reaching their PolicyEn
 queue, the lease and the health checks all look healthy. The startup spec cannot see this, because the initial-list pod
 events are not handled at startup.
 
-The spec picks `NPC_CHURN_PROBES` NetworkPolicies, preferring ones whose ingress peer has a namespaceSelector, and
-creates two probe pods for each: one selected by the policy's podSelector and one selected by its ingress peer. It
-records how long each takes to appear in the policy's PolicyEndpoints without churn. That time depends on the workload:
-in `baseline` a probe pod is selected by hundreds of policies and waits for all of their PolicyEndpoint writes at the
-controller's API client rate limit.
+The spec creates a probe NetworkPolicy in a `probe-<NPC_SCALE_NAMESPACE>` namespace. Its ingress peer has a
+namespaceSelector that only the `probe-peer-<NPC_SCALE_NAMESPACE>` namespace matches. The spec then creates
+`NPC_CHURN_PROBES` pairs of probe pods, a target that the policy's podSelector selects and a peer that its ingress peer
+selects, and records how long each takes to appear in the policy's PolicyEndpoints without churn. No generated policy
+selects the probe pods, so this time is the pod event handling plus one reconcile, whatever the workload.
 
 It then creates `NPC_CHURN_RATE` pods per second in the `churn-<NPC_SCALE_NAMESPACE>` namespace, which no generated
 policy selects, and deletes each after `NPC_CHURN_POD_LIFETIME`. These pods cost the pod handler the same as any other
@@ -56,8 +56,8 @@ pod event but change no PolicyEndpoint. After `NPC_CHURN_WARMUP` it repeats the 
 - the churn reached less than 80% of `NPC_CHURN_RATE`, which would make the result meaningless, or
 - a controller pod restarted or was replaced.
 
-It reports both sets of probe times, the churn rate reached and the leader pod's CPU. The churn namespace is deleted at
-the end of the spec even with `NPC_SCALE_KEEP_RESOURCES`, since it holds only churn pods.
+It reports both sets of probe times, the churn rate reached and the leader pod's CPU. The churn and probe namespaces
+are deleted at the end of the spec even with `NPC_SCALE_KEEP_RESOURCES`, since they hold only what the spec created.
 
 ### Scenarios
 
@@ -113,7 +113,7 @@ make run-startup-scale-test
 | `NPC_CHURN_RATE` | `25` | pods created, and later deleted, per second by the pod churn spec; `0` skips the spec |
 | `NPC_CHURN_POD_LIFETIME` | `30s` | how long each churn pod lives |
 | `NPC_CHURN_WARMUP` | `2m` | how long pods churn before the probes are repeated |
-| `NPC_CHURN_PROBES` | `3` | policies to probe, each with a target and a peer probe pod on its own kwok node |
+| `NPC_CHURN_PROBES` | `3` | target and peer probe pod pairs, run without and with churn; each pod gets its own kwok node |
 | `NPC_CHURN_MAX_DELAY` | `15s` | how much pod churn may add to the slowest and to the median probe time |
 | `NPC_NAMESPACE` / `NPC_DEPLOYMENT` | `kube-system` / `amazon-network-policy-controller-k8s` | controller deployment |
 | `KWOK_VERSION` | `v0.8.0` | kwok release to install |
