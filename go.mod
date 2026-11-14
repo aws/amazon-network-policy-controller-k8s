@@ -15,7 +15,7 @@ require (
 	github.com/spf13/pflag v1.1.0
 	github.com/stretchr/testify v1.12.1
 	go.uber.org/zap v1.28.0
-	golang.org/x/exp v0.0.0-20261106192419-47ce03d25ef0
+	golang.org/x/exp v0.0.0-20261113113407-e3970619a1a4
 	golang.org/x/time v0.16.0
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
