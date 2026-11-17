@@ -9,7 +9,7 @@
 #
 # Optional:
 #   E2E_NAMESPACE  namespace to create (default: npc-regression-e2e)
-#   E2E_TIMEOUT    timeout passed to kubectl wait (default: 180s)
+#   E2E_TIMEOUT    positive whole-second timeout, e.g. 180s (default: 180s)
 
 set -euo pipefail
 
@@ -19,12 +19,18 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_ROOT
 readonly FIXTURES_DIR="${REPO_ROOT}/tests/e2e"
 readonly E2E_NAMESPACE="${E2E_NAMESPACE:-npc-regression-e2e}"
-readonly E2E_TIMEOUT="${E2E_TIMEOUT:-180s}"
+E2E_TIMEOUT="${E2E_TIMEOUT:-180s}"
 
 fail() {
     echo "ERROR: $*" >&2
     exit 1
 }
+
+if [[ ! "${E2E_TIMEOUT}" =~ ^[1-9][0-9]*s$ ]]; then
+    fail "E2E_TIMEOUT must be a positive whole-second duration such as 180s"
+fi
+readonly E2E_TIMEOUT
+readonly E2E_TIMEOUT_SECONDS="${E2E_TIMEOUT%s}"
 
 cleanup() {
     # Delete the finalizer-bearing ANP while the candidate controller is still
@@ -42,7 +48,7 @@ require_command() {
 }
 
 wait_for_policy_endpoint() {
-    local deadline=$((SECONDS + ${E2E_TIMEOUT%s}))
+    local deadline=$((SECONDS + E2E_TIMEOUT_SECONDS))
 
     while (( SECONDS < deadline )); do
         if kubectl get policyendpoint -n "${E2E_NAMESPACE}" -o json |
@@ -84,6 +90,21 @@ wait_for_policy_endpoint() {
     fail "timed out waiting for the expected PolicyEndpoint egress rules"
 }
 
+wait_for_network_policy_agent() {
+    local deadline=$((SECONDS + E2E_TIMEOUT_SECONDS))
+
+    while (( SECONDS < deadline )); do
+        if kubectl -n "${E2E_NAMESPACE}" exec client -- nslookup example.com >/dev/null 2>&1 &&
+            kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 2 example.com 443 >/dev/null 2>&1 &&
+            ! kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 2 example.com 80 >/dev/null 2>&1; then
+            return
+        fi
+        sleep 2
+    done
+
+    fail "timed out waiting for Network Policy Agent enforcement: expected DNS and TCP/443 allowed, TCP/80 denied"
+}
+
 require_command kubectl
 require_command jq
 
@@ -96,10 +117,9 @@ if kubectl get namespace "${E2E_NAMESPACE}" >/dev/null 2>&1; then
     fail "namespace ${E2E_NAMESPACE} already exists; choose E2E_NAMESPACE or remove the stale test namespace"
 fi
 
-trap cleanup EXIT
-
 echo "Creating isolated test namespace ${E2E_NAMESPACE}"
 kubectl create namespace "${E2E_NAMESPACE}"
+trap cleanup EXIT
 
 echo "Checking CRD domain-name validation"
 kubectl -n "${E2E_NAMESPACE}" apply --dry-run=server -f "${FIXTURES_DIR}/valid-domain.yaml" >/dev/null
@@ -115,10 +135,6 @@ echo "Waiting for the controller's PolicyEndpoint output"
 wait_for_policy_endpoint
 
 echo "Validating DNS, allowed TCP/443, and denied TCP/80"
-kubectl -n "${E2E_NAMESPACE}" exec client -- nslookup example.com >/dev/null
-kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 10 example.com 443
-if kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 10 example.com 80 >/dev/null 2>&1; then
-    fail "TCP/80 unexpectedly succeeded; only TCP/443 is allowed for example.com"
-fi
+wait_for_network_policy_agent
 
 echo "PASS: NPC ports-only egress and domain-name CRD regressions"

@@ -47,5 +47,6 @@ Run it after deploying the candidate artifacts:
 KUBECONFIG=/path/to/kubeconfig make e2e-regression
 ```
 
-Set `E2E_NAMESPACE` to use a different namespace and `E2E_TIMEOUT` to change
-the default 180-second readiness and reconciliation timeout.
+Set `E2E_NAMESPACE` to use a different namespace. `E2E_TIMEOUT` changes the
+default 180-second readiness and reconciliation timeout and must be a positive
+whole-second duration such as `180s`.
