@@ -31,7 +31,7 @@ If you ask an agent for a self-review, keep the guide out of its prompt and give
 # A self-review prompt; run it on your branch before opening the PR
 Review the diff between origin/main and HEAD. Report a finding as blocking only
 if it makes a PolicyEndpoint allow what the policy denies or deny what it allows,
-leaves a PolicyEndpoint wrong after the next reconcile, grows without bound,
+even briefly, leaves a PolicyEndpoint wrong after the next reconcile, grows without bound,
 stops the controller from starting at scale, or breaks an upgrade or rollback.
 Everything else is advisory; keep advisory findings to one line each.
 For any finding about the informer cache, UnsafeDisableDeepCopy, rule identity
@@ -47,7 +47,7 @@ Then check the PR description:
 
 ## When you review someone else's PR
 
-The same applies: use the guide to check specific items the diff touches, not as a checklist to run in full. An item's tag is its worst case; rate each finding by its own reach and whether it self-corrects. An agent tends to report more concerns than a human reviewer would, so drop the ones you wouldn't raise yourself.
+The same applies: use the guide to check specific items the diff touches, not as a checklist to run in full. An item's tag is its worst case; rate each finding by whether it changes enforcement, its reach, and whether it self-corrects. Wrong enforcement is blocking even when it is temporary. An agent tends to report more concerns than a human reviewer would, so drop the ones you wouldn't raise yourself.
 
 ## Tools
 

@@ -6,13 +6,13 @@ This guide lists the problems maintainers keep finding in review, so authors and
 
 An item is tagged `[blocking]` when, whenever its condition holds, the change causes one of these:
 
-- **Wrong enforcement.** A PolicyEndpoint (PE) or ClusterPolicyEndpoint (CPE) allows traffic the policy denies or denies traffic it allows. This includes a pod missing from, or wrongly listed in, `PodSelectorEndpoints`: the node agent isolates only the pods listed there.
-- **A state that doesn't self-correct.** The PE stays wrong after the next reconcile of that policy, until an unrelated event, a restart or manual action.
+- **Wrong enforcement, even briefly.** A PolicyEndpoint (PE) or ClusterPolicyEndpoint (CPE) allows traffic the policy denies or denies traffic it allows. This includes a pod missing from, or wrongly listed in, `PodSelectorEndpoints`: the node agent isolates only the pods listed there. The delay between a policy, pod, namespace or Service event and the reconcile that applies it is how the controller works, not a defect. A change that writes a PE the policy doesn't mean, or makes that delay longer, is blocking even if a later reconcile corrects it.
+- **A state that doesn't self-correct.** A PE, CPE or finalizer stays wrong after the next reconcile of its policy, until an unrelated event, a restart or manual action: for example a leaked PE, or a policy that can't be deleted.
 - **Unbounded growth.** PE count, controller memory, or API writes that grow without bound, or with the number of events rather than the number of policies.
 - **A controller that can't start or stay up.** A crash, or an informer sync that exceeds `CacheSyncTimeout` on large clusters.
 - **A broken upgrade or rollback.** Enforcement is still wrong after the new or previous controller version has run, or the node agent on the nodes misreads what the controller writes.
 
-It is `[advisory]` if the harm is transient (the next reconcile, requeue or event fixes it), needs an unusual precondition, or is about quality, noise, tests or docs. Each blocking item has a "Blocking when:" clause, and some advisory items a "Blocking only if:" clause, that names the condition that makes an instance blocking. Report blocking findings first and keep advisory ones brief. The tag is the item's worst case, so judge each finding's own severity by its reach and whether it self-corrects, and don't copy the tag.
+It is `[advisory]` if the harm doesn't change enforcement and is transient (extra writes, latency or log volume that the next reconcile, requeue or event clears), needs an unusual precondition, or is about quality, noise, tests or docs. Wrong enforcement is never advisory because it is temporary. Each blocking item has a "Blocking when:" clause, and some advisory items a "Blocking only if:" clause, that names the condition that makes an instance blocking. Report blocking findings first and keep advisory ones brief. The tag is the item's worst case, so judge each finding's own severity by whether it changes enforcement, its reach, and whether it self-corrects, and don't copy the tag.
 
 Run it against a diff. For each changed area, look up the matching checks:
 
@@ -33,7 +33,7 @@ Run it against a diff. For each changed area, look up the matching checks:
 
 - NPC: `aws/amazon-network-policy-controller-k8s` at `0e7864a`.
 - Node agent: `aws/aws-network-policy-agent` at `ccb42cd`.
-- Libraries, as pinned in NPC `go.mod`: `sigs.k8s.io/controller-runtime` v0.25.2, `k8s.io/client-go` v0.37.2.
+- Libraries, as pinned in NPC `go.mod` at `0e7864a`: `sigs.k8s.io/controller-runtime` v0.25.2, `k8s.io/client-go` v0.37.2.
 
 Items marked "(inferred)" rest on reasoning, or on Kubernetes or controller-runtime behavior that was not traced in source. Treat them as questions, not facts.
 
@@ -44,16 +44,16 @@ Items marked "(inferred)" rest on reasoning, or on Kubernetes or controller-runt
 
 - [blocking] Does a handler or resolver write to an object it got from the cache, including maps, slices and pointers inside it, or the policies the resolver returns? [K1](#k1) Blocking when: any write reaches a cached object. Every later reader sees the change, and the cache never repairs it until the object changes on the server.
 - [advisory] Does new handler work run for every pod, namespace or Service event? What does it cost per event, with 10k pods and 10k policies? [P1](#p-handler) Blocking only if: the cost per event grows with the number of policies or pods in a way the initial list or a burst turns into a startup failure ([K4](#k4)).
-- [advisory] If the resolver fails, is the event dropped? Is that acceptable for this error, or does the policy need another path to be reconciled? [K4](#k4) Blocking only if: a new error is returned on a path that runs for most events, so policies stop following pod changes.
-- [advisory] For an update, does the handler compare the fields the resolver actually depends on (labels, IP, phase, deletion, Service spec)? A missing field means changes are ignored; an extra one means wasted reconciles. [P1](#p-handler) Blocking only if: a field that changes which PE a pod belongs to is not compared, so the pod's PE stays wrong until another event.
-- [advisory] Are both the old and the new object matched on label changes, so a pod that leaves a selector also updates its old policy? [P1](#p-handler)
+- [blocking] If the resolver fails, is the event dropped? Does the policy have another path to be reconciled? [K4](#k4) Blocking when: a new error return drops an event that would change a PE, so the PE stays wrong until another event touches the policy.
+- [blocking] For an update, does the handler compare the fields the resolver actually depends on (labels, IP, phase, deletion, Service spec)? A missing field means changes are ignored; an extra one means wasted reconciles. [P1](#p-handler) Blocking when: a field that changes what a PE contains is not compared, so the PE stays wrong until another event. An extra field is advisory.
+- [blocking] Are both the old and the new object matched on label changes, so a pod that leaves a selector also updates its old policy? [P1](#p-handler) Blocking when: only the new object is matched, so the old policy's PE keeps the pod.
 
 <a id="ck-cache"></a>
 **Informer cache**
 
 - [blocking] Does new code read a pod or Service field that the transform drops? [K2](#k2) Blocking when: the dropped field decides what goes into a PE; it reads as the zero value with no error.
 - [blocking] Does new code `Get` or `List` a type that `BuildCacheOptions` doesn't list? [K3](#k3) Blocking when: the read is on the reconcile or event path; it fails every time because `ReaderFailOnMissingInformer` is set.
-- [advisory] Does a change to the pod field selector keep every pod the controller needs, and still deliver a delete when a pod leaves the set? [K2](#k2)
+- [blocking] Does a change to the pod field selector keep every pod the controller needs, and still deliver a delete when a pod leaves the set? [K2](#k2) Blocking when: a pod a PE should list is filtered out, or a pod that leaves the set stays in a PE.
 - [advisory] Does a new `client.UnsafeDisableDeepCopy` read return objects that anything later modifies, including in `pkg/policyendpoints`? [K1](#k1) Blocking only if: the result is modified.
 
 <a id="ck-resolve"></a>
@@ -61,7 +61,7 @@ Items marked "(inferred)" rest on reasoning, or on Kubernetes or controller-runt
 
 - [blocking] Does a change to a resolver produce the same endpoints for every existing policy shape it doesn't mean to change? NP, ANP and CNP each have their own resolver; does the change belong in all three? Blocking when: an existing policy shape now resolves to a different set of addresses or ports.
 - [blocking] For named ports, is the name resolved against the right pods (destination pods for ingress, each peer pod for egress), and can a Service `targetPort` name reach a container port the policy doesn't allow? [P3](#p-ports), [P4](#p-svc) Blocking when: the change lets a ClusterIP or pod IP through on a port the policy doesn't allow.
-- [advisory] Are pods without an IP, terminal pods and hostNetwork pods handled the way the existing paths handle them? [P3](#p-ports)
+- [advisory] Are pods without an IP, terminal pods and hostNetwork pods handled the way the existing paths handle them? [P3](#p-ports) Blocking only if: a different handling changes what a PE allows.
 - [advisory] Is the result deterministic: are maps and namespace lists sorted where the order reaches a PE? [Theme](#themes) Blocking only if: the order changes the PE on every reconcile, so every reconcile writes a PE ([K5](#k5)).
 - [advisory] Is a slice shared between several endpoints (for example the resolved ports of a rule) left unmodified downstream? [K1](#k1)
 
@@ -70,10 +70,10 @@ Items marked "(inferred)" rest on reasoning, or on Kubernetes or controller-runt
 
 - [blocking] Does the rule identity key (`getEndpointInfoKey`, `getClusterEndpointInfoKey`, `getCombineKey`) include every field that makes two rules different, framed so two different rules can't produce the same bytes? [P2](#p-key) Blocking when: two different rules get the same key, so one of them is dropped or merged.
 - [blocking] Is a PE written only when its spec changed, compared order-insensitively? [K5](#k5) Blocking when: an unchanged policy writes a PE on every reconcile; every write is watched by every node agent.
-- [advisory] Can a failure between the create, update and delete loops leave a PE set that enforces something the policy doesn't say, and does the next reconcile repair it? [K6](#k6) Blocking only if: the next reconcile can't repair it.
+- [blocking] Can a failure, or the order of the create, update and delete loops, leave a PE set that enforces something the policy doesn't say? [K6](#k6) Blocking when: the change adds or widens such a window, even if the next reconcile repairs it.
 - [blocking] Does new code list PEs or CPEs by label? [K6](#k6) Blocking when: the list decides what is deleted or reused; PEs carry no labels, so it returns nothing.
-- [advisory] Does new code reuse an existing PE that may belong to an older policy with the same name (a different UID)? [K6](#k6), [#265](https://github.com/aws/amazon-network-policy-controller-k8s/issues/265)
-- [advisory] Does a change to bin-packing keep each PE at or under `--endpoint-chunk-size` entries per list, and avoid moving entries between PEs when nothing changed? [K5](#k5)
+- [blocking] Does new code reuse an existing PE that may belong to an older policy with the same name (a different UID)? [K6](#k6), [#265](https://github.com/aws/amazon-network-policy-controller-k8s/issues/265) Blocking when: new code adds a path that adopts such a PE, so garbage collection can delete the new policy's only PE.
+- [advisory] Does a change to bin-packing keep each PE at or under `--endpoint-chunk-size` entries per list, and avoid moving entries between PEs when nothing changed? [K5](#k5) Blocking only if: an entry is missing from every PE while it moves, or moves on every reconcile.
 
 <a id="ck-api"></a>
 **API and CRDs**
@@ -87,8 +87,8 @@ Items marked "(inferred)" rest on reasoning, or on Kubernetes or controller-runt
 **Reconciler**
 
 - [blocking] Does every failure that leaves a PE wrong reach `Reconcile`'s return value? Blocking when: an error is logged and dropped on the reconcile path, so nothing requeues it.
-- [advisory] A namespaced request reconciles both the NetworkPolicy and the ANP with that name. Does a change to one path handle the other's errors and latency? [K6](#k6)
-- [advisory] Does cleanup still run when the policy is deleted before its finalizer was added, or while the controller is down? [K6](#k6)
+- [advisory] A namespaced request reconciles both the NetworkPolicy and the ANP with that name. Does a change to one path handle the other's errors and latency? [K6](#k6) Blocking only if: an error in one stops the other from being written.
+- [advisory] Does cleanup still run when the policy is deleted before its finalizer was added, or while the controller is down? [K6](#k6) Blocking only if: a deleted policy's PEs stay and keep being enforced.
 
 <a id="ck-chart"></a>
 **Flags, RBAC and chart**
@@ -117,7 +117,7 @@ Items marked "(inferred)" rest on reasoning, or on Kubernetes or controller-runt
 
 These apply to any change. Where a line links an entry, that entry makes it specific to NPC.
 
-- [advisory] What happens on upgrade: the new controller reads PEs the old one wrote. On rollback: the old controller reads PEs the new one wrote. Does each reconcile them back to its own shape without a window of wrong enforcement? [K6](#k6), [K7](#k7)
+- [advisory] What happens on upgrade: the new controller reads PEs the old one wrote. On rollback: the old controller reads PEs the new one wrote. Does each reconcile them back to its own shape? [K6](#k6), [K7](#k7) Blocking only if: during the switch a PE enforces something neither version means, for example a PE half-converted to a new encoding.
 - [advisory] Each new test fails on main, passes with the change, calls production code, and avoids sleeps and absolute counts.
 - [advisory] No `time.Sleep` waits for a condition that can be checked ([#209](https://github.com/aws/amazon-network-policy-controller-k8s/pull/209#discussion_r2760512052)).
 - [advisory] New logic is written once. NP, ANP and CNP share a helper where their semantics match ([#231](https://github.com/aws/amazon-network-policy-controller-k8s/pull/231#discussion_r3270150950), [#227](https://github.com/aws/amazon-network-policy-controller-k8s/pull/227#discussion_r3221549005)).
@@ -175,7 +175,7 @@ Blocking when: the reconcile or event path reads a type that `BuildCacheOptions`
 <a id="k4"></a>
 ### [advisory] K4. Event handlers run inline and do not retry
 
-Blocking only if: new handler work per event grows with the number of pods or policies, so a burst of events or a failover stalls the queue or startup, or a new error on a common path drops most events.
+Blocking only if: new handler work per event grows with the number of pods or policies, so a burst of events or a failover stalls the queue or startup, or a new error return drops an event that would change a PE.
 
 **Rule.** Pod, namespace and Service handlers must stay cheap, read only from the cache, and treat a resolver error as a dropped event.
 
@@ -192,22 +192,22 @@ Blocking when: an unchanged policy or an unrelated event leads to a PE write.
 
 **Rule.** Before an update, compare the desired spec with the cached one using `EqualPolicyEndpointSpec` / `EqualClusterPolicyEndpointSpec`, which compare `Ingress`, `Egress`, `PodSelectorEndpoints`, `Ports` and `Except` as unordered sets. Skip the write when they are equal.
 
-**Why.** Every PE write is watched by every node agent in the cluster, and the agent reconciles each one. A write per reconcile turns every pod event into cluster-wide work. The resolver builds lists from maps and sets, so order is not stable between reconciles; an ordered comparison wrote PEs that had not changed ([#219](https://github.com/aws/amazon-network-policy-controller-k8s/pull/219#discussion_r2921687893)). `setLastChangeTriggerTime` stamps the annotation only on PEs that are written ([#213](https://github.com/aws/amazon-network-policy-controller-k8s/pull/213#discussion_r2842641091)).
+**Why.** Every node agent in the cluster receives every PE write through its watch. A write per reconcile turns every pod event into cluster-wide work. The resolver builds lists from maps and sets, so order is not stable between reconciles; an ordered comparison wrote PEs that had not changed ([#219](https://github.com/aws/amazon-network-policy-controller-k8s/pull/219#discussion_r2921687893)). `setLastChangeTriggerTime` stamps the annotation only on PEs that are written ([#213](https://github.com/aws/amazon-network-policy-controller-k8s/pull/213#discussion_r2842641091)).
 
 **Cites.** NPC 0e7864a: `pkg/equality/semantic.go:13-40`, `pkg/policyendpoints/manager.go:136-150` (NP), `217-231` (ANP), `788-802` (CPE).
 
 **Check.** A table test that reconciles the same policy twice with the inputs reordered and expects no update.
 
 <a id="k6"></a>
-### [advisory] K6. The PE set is written in three steps, and cleanup relies on garbage collection
+### [blocking] K6. The PE set is written in three steps, and cleanup relies on garbage collection
 
-Blocking only if: a failure between steps leaves a PE set that the next reconcile can't repair, or new code reuses or deletes PEs found by a list that can return the wrong set.
+Blocking when: a change adds or widens a window in which a policy's PE set enforces something the policy doesn't say, even if the next reconcile repairs it, or new code reuses or deletes PEs found by a list that can return the wrong set.
 
-**Rule.** Assume a reconcile can stop after any single create, update or delete. Find a policy's PEs only through the field index. Don't rely on `Cleanup` to delete PEs.
+**Rule.** Assume a reconcile can stop after any single create, update or delete, and that the node agent applies each write as it arrives. Don't add steps that leave the PE set wrong in between. Find a policy's PEs only through the field index. Don't rely on `Cleanup` to delete PEs.
 
 **Why.**
 
-- `Reconcile`, `ReconcileANP` and `ReconcileCNP` create, then update, then delete, and return on the first error (`manager.go:128-157`, `209-238`, `780-809`). In between, the node agent sees a mix of old and new PEs for the policy and enforces their union. The next reconcile recomputes from the cache, so the state repairs itself unless the cache is behind the writes (inferred: a create the cache hasn't seen yet can lead the next reconcile to create a second PE with the same rules).
+- `Reconcile`, `ReconcileANP` and `ReconcileCNP` create, then update, then delete, and return on the first error (`manager.go:128-157`, `209-238`, `780-809`). In between, the node agent sees a mix of old and new PEs for the policy and enforces the union of their rules (node agent ccb42cd: `controllers/policyendpoints_controller.go:644-700`, `deriveIngressAndEgressFirewallRules` appends the rules of every PE that selects the pod). So until the update and delete land, the old rules are still allowed. This window exists on main today. The next reconcile recomputes from the cache, so the state repairs itself unless the cache is behind the writes (inferred: a create the cache hasn't seen yet can lead the next reconcile to create a second PE with the same rules).
 - New PEs use `GenerateName` (`manager.go:401`), so a retried create makes a new name rather than failing with `AlreadyExists`.
 - `Cleanup` and `CleanupANP` list PEs with `client.MatchingLabels{IndexKeyPolicyReferenceName: name}` (`manager.go:168-170`, `249-251`). PEs carry no labels, so the list is empty and the PEs are removed by garbage collection through their owner reference after the finalizer is removed. `CleanupCNP` uses the field index (`manager.go:819-821`).
 - `Reconcile` finds PEs by policy name through the field index, not by UID. A policy deleted and re-created under the same name can adopt the old policy's PE while garbage collection is about to delete it ([#265](https://github.com/aws/amazon-network-policy-controller-k8s/issues/265)).
@@ -236,7 +236,7 @@ Blocking when: the change depends on a CRD schema change reaching clusters where
 
 **Rule.** Don't assume a changed CRD schema reaches existing clusters through the controller. Plan the rollout of any CRD change separately ([#198](https://github.com/aws/amazon-network-policy-controller-k8s/pull/198#discussion_r2536246731)).
 
-**Why.** `ensureCRD` creates a CRD only when `Get` returns not found; an existing CRD is left as it is. The monitor cancels the manager's context if a CRD disappears, so the pod restarts and creates it again. A field missing from the existing schema is dropped by the API server when the controller writes it (inferred: structural schema pruning). The chart ships only the PolicyEndpoint CRD; the ANP, CNP and CPE CRDs exist only because the controller creates them ([#266](https://github.com/aws/amazon-network-policy-controller-k8s/pull/266), [#267](https://github.com/aws/amazon-network-policy-controller-k8s/pull/267) propose shipping all four).
+**Why.** `ensureCRD` creates a CRD only when `Get` returns not found; an existing CRD is left as it is. The monitor cancels the manager's context if a CRD disappears; the manager stops, the process exits, and the container restarts and creates the CRD again. A field missing from the existing schema is dropped by the API server when the controller writes it (inferred: structural schema pruning). The chart ships only the PolicyEndpoint CRD; the ANP, CNP and CPE CRDs exist only because the controller creates them ([#266](https://github.com/aws/amazon-network-policy-controller-k8s/pull/266), [#267](https://github.com/aws/amazon-network-policy-controller-k8s/pull/267) propose shipping all four).
 
 `make prepare-embed` concatenates `config/crd/bases/*.yaml` into `pkg/crd/crds.yaml` and rewrites line 1834, the PolicyEndpoint CRD's `controller-gen.kubebuilder.io/version` annotation, back to `v0.11.3`. The `sed` addresses a fixed line number, so a change to the CRDs above that line moves the annotation and the rewrite stops matching.
 
@@ -264,7 +264,7 @@ Use the existing mechanism before adding a new one. All citations are NPC 0e7864
 Blocking when: a key leaves out a field that distinguishes two rules, or two different rules can produce the same bytes.
 
 - `getEndpointInfoKey` hashes `field=value|` pairs for the CIDR or domain name, each `Except`, and each port's protocol, port and end port, with `nil` written distinctly from zero (`pkg/policyendpoints/manager.go:438-481`). The framing was added after a port and end port could concatenate to the same bytes as a single port ([#260](https://github.com/aws/amazon-network-policy-controller-k8s/pull/260); tests in `hash_collision_test.go`). `getClusterEndpointInfoKey` does the same for CPEs and includes the action (`clusterpolicyendpoints_chunking.go:287-297`).
-- The key is order-sensitive in `Ports` and `Except` (`manager.go:436-437`). A different order yields a different key, so the rule is removed and re-added. Keep resolver output ordered, or sort before hashing, and say which in the PR ([#263](https://github.com/aws/amazon-network-policy-controller-k8s/pull/263#discussion_r4074726803)).
+- The key is order-sensitive in `Ports` and `Except` (`manager.go:436-437`). A different order yields a different key, so the rule is treated as removed and re-added and can move to another PE. Keep resolver output ordered, or sort before hashing, and say which in the PR ([#263](https://github.com/aws/amazon-network-policy-controller-k8s/pull/263#discussion_r4074726803)).
 - `getCombineKey` identifies a rule by CIDR or domain name plus sorted excepts, without ports, so rules for the same addresses merge their ports (`manager.go:336-380`, [#218](https://github.com/aws/amazon-network-policy-controller-k8s/pull/218), [#231](https://github.com/aws/amazon-network-policy-controller-k8s/pull/231)). An entry with no ports means all ports and absorbs the others.
 
 <a id="p-ports"></a>
@@ -318,7 +318,7 @@ Roughly ordered by how often reviewers raised them on PRs #193 to #289 (approxim
 | advisory | Cost on the event path | What does this cost per event at scale, and does it list pods or policies it could skip? Blocking only if: startup or the queue stalls at scale ([K4](#k4)). | [#219](https://github.com/aws/amazon-network-policy-controller-k8s/pull/219#discussion_r2921661272), [#210](https://github.com/aws/amazon-network-policy-controller-k8s/pull/210#discussion_r2820649262), [#289](https://github.com/aws/amazon-network-policy-controller-k8s/pull/289#discussion_r4589290409) |
 | advisory | Test cases for common shapes | Are mixed ports, several matching namespaces, nil ports and hostNetwork pods covered? ([P7](#p-tests)) | [#227](https://github.com/aws/amazon-network-policy-controller-k8s/pull/227#discussion_r3221575747), [#232](https://github.com/aws/amazon-network-policy-controller-k8s/pull/232#discussion_r3251188965), [#237](https://github.com/aws/amazon-network-policy-controller-k8s/pull/237#discussion_r3384187963) |
 | blocking | Unneeded PE writes | Is the write skipped when the spec is unchanged, for PE and CPE alike? Blocking when: unchanged policies write PEs ([K5](#k5)). | [#213](https://github.com/aws/amazon-network-policy-controller-k8s/pull/213#discussion_r2842425382), [#219](https://github.com/aws/amazon-network-policy-controller-k8s/pull/219#discussion_r2921687893) |
-| advisory | Errors reach the caller | Is an error returned and handled, not logged in two places with a misleading message? | [#223](https://github.com/aws/amazon-network-policy-controller-k8s/pull/223#discussion_r2948732332), [#221](https://github.com/aws/amazon-network-policy-controller-k8s/pull/221#discussion_r2942657871), [#227](https://github.com/aws/amazon-network-policy-controller-k8s/pull/227#discussion_r3221687714) |
+| advisory | Errors reach the caller | Is an error returned and handled, not logged in two places with a misleading message? Blocking only if: a dropped error leaves a PE wrong ([K4](#k4)). | [#223](https://github.com/aws/amazon-network-policy-controller-k8s/pull/223#discussion_r2948732332), [#221](https://github.com/aws/amazon-network-policy-controller-k8s/pull/221#discussion_r2942657871), [#227](https://github.com/aws/amazon-network-policy-controller-k8s/pull/227#discussion_r3221687714) |
 | advisory | Deterministic output | Are namespaces and map iterations sorted where the order reaches a PE? | [#232](https://github.com/aws/amazon-network-policy-controller-k8s/pull/232#discussion_r3251167158) |
 | advisory | Shared data stays read-only | Is a cached object, or a slice shared between endpoints, modified downstream? ([K1](#k1)) | [#227](https://github.com/aws/amazon-network-policy-controller-k8s/pull/227#discussion_r3222900780), [#218](https://github.com/aws/amazon-network-policy-controller-k8s/pull/218#discussion_r2896869754), [#273](https://github.com/aws/amazon-network-policy-controller-k8s/pull/273) |
 | advisory | CI fails closed | Does a skipped, cancelled or errored step report failure? Does cleanup wait for deletion? ([P7](#p-tests)) | [#269](https://github.com/aws/amazon-network-policy-controller-k8s/pull/269#discussion_r4319446855), [#269](https://github.com/aws/amazon-network-policy-controller-k8s/pull/269#discussion_r4319446878), [#270](https://github.com/aws/amazon-network-policy-controller-k8s/pull/270#discussion_r4406927331) |
