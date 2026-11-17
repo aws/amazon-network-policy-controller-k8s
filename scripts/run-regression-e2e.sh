@@ -81,7 +81,7 @@ require_command kubectl
 require_command jq
 
 [[ -n "${KUBECONFIG:-}" ]] || fail "set KUBECONFIG to the target cluster before running this test"
-kubectl auth can-i create namespaces | grep -qx yes || fail "current identity cannot create namespaces"
+kubectl auth can-i create namespaces 2>/dev/null | grep -qx yes || fail "current identity cannot create namespaces"
 kubectl get crd applicationnetworkpolicies.networking.k8s.aws >/dev/null ||
     fail "ApplicationNetworkPolicy CRD is not installed"
 
@@ -110,7 +110,7 @@ wait_for_policy_endpoint
 echo "Validating DNS, allowed TCP/443, and denied TCP/80"
 kubectl -n "${E2E_NAMESPACE}" exec client -- nslookup example.com >/dev/null
 kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 10 example.com 443
-if kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 10 example.com 80; then
+if kubectl -n "${E2E_NAMESPACE}" exec client -- nc -z -w 10 example.com 80 >/dev/null 2>&1; then
     fail "TCP/80 unexpectedly succeeded; only TCP/443 is allowed for example.com"
 fi
 
