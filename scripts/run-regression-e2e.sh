@@ -27,7 +27,14 @@ fail() {
 }
 
 cleanup() {
-    kubectl delete namespace "${E2E_NAMESPACE}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    # Delete the finalizer-bearing ANP while the candidate controller is still
+    # running. Waiting here prevents a caller that restores the controller
+    # immediately after this script exits from leaving the test namespace in
+    # Terminating state.
+    kubectl -n "${E2E_NAMESPACE}" delete applicationnetworkpolicy ports-only-egress \
+        --ignore-not-found --wait=true --timeout="${E2E_TIMEOUT}" >/dev/null 2>&1 || true
+    kubectl delete namespace "${E2E_NAMESPACE}" \
+        --ignore-not-found --wait=true --timeout="${E2E_TIMEOUT}" >/dev/null 2>&1 || true
 }
 
 require_command() {
