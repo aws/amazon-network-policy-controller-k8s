@@ -537,6 +537,7 @@ func TestPolicyReferenceResolver_isServiceMatchLabelSelector(t *testing.T) {
 		name       string
 		nsGetCalls []namespaceGetCall
 		svc        *corev1.Service
+		pods       []corev1.Pod
 		peer       *networking.NetworkPolicyPeer
 		namespace  string
 		want       bool
@@ -697,6 +698,36 @@ func TestPolicyReferenceResolver_isServiceMatchLabelSelector(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:       "peer label differs from svc selector but backend pod matches",
+			nsGetCalls: []namespaceGetCall{nsGetCall},
+			svc:        applicationSvc,
+			pods: []corev1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "application", Labels: map[string]string{"app": "select", "opt-in": "true"}}},
+			},
+			peer: &networking.NetworkPolicyPeer{
+				NamespaceSelector: &metav1.LabelSelector{},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"opt-in": "true"},
+				},
+			},
+			want: true,
+		},
+		{
+			name:       "peer label differs from svc selector and no backend pod matches",
+			nsGetCalls: []namespaceGetCall{nsGetCall},
+			svc:        applicationSvc,
+			pods: []corev1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "application", Labels: map[string]string{"app": "select"}}},
+			},
+			peer: &networking.NetworkPolicyPeer{
+				NamespaceSelector: &metav1.LabelSelector{},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"opt-in": "true"},
+				},
+			},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -725,6 +756,13 @@ func TestPolicyReferenceResolver_isServiceMatchLabelSelector(t *testing.T) {
 					},
 				)
 			}
+			pods := tt.pods
+			mockClient.EXPECT().List(gomock.Any(), gomock.AssignableToTypeOf(&corev1.PodList{}), gomock.Any()).DoAndReturn(
+				func(ctx context.Context, list *corev1.PodList, opts ...client.ListOption) error {
+					list.Items = pods
+					return nil
+				},
+			).AnyTimes()
 			got := policyReferenceResolver.isServiceMatchLabelSelector(context.Background(), tt.svc, tt.peer, tt.namespace)
 			assert.Equal(t, tt.want, got)
 		})

@@ -511,8 +511,8 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 			r.logger.V(1).Info("skipping headless service when populating EndpointInfo", "serviceName", svc.Name, "serviceNamespace", svc.Namespace)
 			continue
 		}
-		// do not add services if their pod selector is not matching with the pod selector defined in the network policy
-		if !svcSelector.Matches(labels.Set(svc.Spec.Selector)) {
+		// do not add services unless every backend is selected by the network policy peer
+		if !r.isServiceSelectedByPeer(svc, svcSelector, getAllPods) {
 			if nonMatchingPodSelectorCount < maxSampleSize {
 				nonMatchingPodSelectorList = append(nonMatchingPodSelectorList, fmt.Sprintf("%s/%s (expectedPS: %s)", svc.Namespace, svc.Name, svcSelector.String()))
 			}
@@ -571,6 +571,36 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 		r.logger.Info("Sample of pod selector mismatched services (up to 50)", "services", nonMatchingPodSelectorList)
 	}
 	return networkPeers
+}
+
+// isServiceSelectedByPeer returns true if every pod the Service can route to is selected by the peer.
+// That holds when the Service selector itself satisfies the peer, or when all current backend pods do.
+func (r *defaultEndpointsResolver) isServiceSelectedByPeer(svc *corev1.Service, peerSelector labels.Selector,
+	getAllPods func() ([]corev1.Pod, error)) bool {
+	if peerSelector.Matches(labels.Set(svc.Spec.Selector)) {
+		return true
+	}
+	if len(svc.Spec.Selector) == 0 {
+		return false
+	}
+	allPods, err := getAllPods()
+	if err != nil {
+		r.logger.Info("Unable to list pods for service backend check", "service", k8s.NamespacedName(svc), "err", err)
+		return false
+	}
+	backendSelector := labels.SelectorFromSet(svc.Spec.Selector)
+	foundBackend := false
+	for i := range allPods {
+		pod := &allPods[i]
+		if !backendSelector.Matches(labels.Set(pod.Labels)) || k8s.IsPodTerminal(pod) {
+			continue
+		}
+		if !peerSelector.Matches(labels.Set(pod.Labels)) {
+			return false
+		}
+		foundBackend = true
+	}
+	return foundBackend
 }
 
 // hasTargetPortBypass checks if a specific matched service port's named targetPort resolves
