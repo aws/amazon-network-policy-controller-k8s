@@ -17,7 +17,11 @@ limitations under the License.
 package crd
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,10 +29,12 @@ import (
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
+	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -45,6 +51,49 @@ func Test_decodeCRDs(t *testing.T) {
 	// Verify the first CRD has expected properties
 	g.Expect(crds[0].Spec.Group).To(Equal("networking.k8s.aws"))
 	g.Expect(crds[0].Spec.Names.Kind).To(Equal("ApplicationNetworkPolicy"))
+}
+
+// Test_installManifestsIncludeAllCRDs guards against the Helm chart and the kustomize config
+// drifting from the CRDs embedded in the controller binary
+func Test_installManifestsIncludeAllCRDs(t *testing.T) {
+	g := NewWithT(t)
+
+	chartCRDs := decodeCRDsFromFile(t, filepath.Join("..", "..", "charts", "amazon-network-policy-controller-k8s", "crds", "crds.yaml"))
+
+	kustomizationYAML, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "kustomization.yaml"))
+	g.Expect(err).ToNot(HaveOccurred())
+	var kustomization struct {
+		Resources []string `json:"resources"`
+	}
+	g.Expect(yaml.Unmarshal(kustomizationYAML, &kustomization)).To(Succeed())
+
+	for _, crd := range desiredCRDs {
+		g.Expect(chartCRDs).To(HaveKey(crd.Name), "Helm chart is missing CRD %s", crd.Name)
+		g.Expect(chartCRDs[crd.Name].Spec).To(Equal(crd.Spec), "Helm chart CRD %s differs from the embedded one", crd.Name)
+		g.Expect(kustomization.Resources).To(ContainElement(fmt.Sprintf("bases/%s_%s.yaml", crd.Spec.Group, crd.Spec.Names.Plural)),
+			"kustomize config is missing CRD %s", crd.Name)
+	}
+}
+
+// decodeCRDsFromFile decodes all CRDs from a multi-document YAML file, keyed by CRD name
+func decodeCRDsFromFile(t *testing.T, path string) map[string]*v1.CustomResourceDefinition {
+	g := NewWithT(t)
+
+	content, err := os.ReadFile(path)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	decoder := scheme.Codecs.UniversalDeserializer()
+	crds := make(map[string]*v1.CustomResourceDefinition)
+	for _, doc := range bytes.Split(content, []byte("---")) {
+		if len(bytes.TrimSpace(doc)) == 0 {
+			continue
+		}
+		crd := &v1.CustomResourceDefinition{}
+		_, _, err := decoder.Decode(doc, nil, crd)
+		g.Expect(err).ToNot(HaveOccurred())
+		crds[crd.Name] = crd
+	}
+	return crds
 }
 
 func Test_ensureCRD(t *testing.T) {
