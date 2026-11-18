@@ -58,6 +58,8 @@ pod event but change no PolicyEndpoint. After `NPC_CHURN_WARMUP` it repeats the 
 
 It reports both sets of probe times, the churn rate reached and the leader pod's CPU. The churn and probe namespaces
 are deleted at the end of the spec even with `NPC_SCALE_KEEP_RESOURCES`, since they hold only what the spec created.
+Each one's deletion is registered as soon as it is created, so a failure later in the spec cannot leak it, and one
+left by an interrupted run is deleted before it is created again.
 
 ### Scenarios
 

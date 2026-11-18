@@ -77,7 +77,6 @@ func expectPodsResolvedUnderChurn(ctx context.Context) {
 
 	By("creating the probe policy")
 	createProbePolicy(ctx)
-	DeferCleanup(deleteProbeNamespaces)
 
 	By(fmt.Sprintf("probing the probe policy %d times without pod churn", cfg.churnProbes))
 	idle := runProbes(ctx, "idle", idleProbeTimeout, true)
@@ -86,8 +85,7 @@ func expectPodsResolvedUnderChurn(ctx context.Context) {
 	controllers := controllerPodRestarts(ctx)
 	By(fmt.Sprintf("churning %d pods per second in namespace %s, each living %s", cfg.churnRate, churnNamespace(),
 		cfg.churnPodLifetime))
-	createNamespace(ctx, churnNamespace(), nil)
-	DeferCleanup(func() { deleteNamespace(churnNamespace(), churnLabel) })
+	createNamespace(ctx, churnNamespace(), nil, churnLabel)
 	churn := startPodChurn()
 	DeferCleanup(func() { churn.stop() })
 	before := scrapeLeaderCPU(leader)
@@ -205,12 +203,17 @@ const (
 	probePeerApp    = "churn-probe-peer"
 )
 
-// createNamespace creates the namespace once any previous one, from an earlier scenario or an interrupted run, is
-// gone, since pods cannot be created in a namespace that is being deleted.
-func createNamespace(ctx context.Context, name string, nsLabels map[string]string) {
-	waitForNamespaceDeleted(ctx, name)
+// createNamespace deletes any namespace of that name left by an earlier scenario or an interrupted run, creates it,
+// and registers its deletion right away, so that a later failure in the spec cannot leak it.
+func createNamespace(ctx context.Context, name string, nsLabels map[string]string, podLabel string) {
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &corev1.Namespace{})
+	if !apierrors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+		deleteNamespace(name, podLabel)
+	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: nsLabels}}
 	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+	DeferCleanup(func() { deleteNamespace(name, podLabel) })
 }
 
 // deleteNamespace deletes the pods carrying podLabel without a grace period, removes the finalizers of the
@@ -251,8 +254,8 @@ func waitForNamespaceDeleted(ctx context.Context, name string) {
 // probeTargetApp pods and accepts ingress from app probePeerApp pods in namespaces labelled probeLabel, which only
 // probePeerNamespace is. It waits for the policy's first PolicyEndpoint.
 func createProbePolicy(ctx context.Context) {
-	createNamespace(ctx, probeNamespace(), nil)
-	createNamespace(ctx, probePeerNamespace(), map[string]string{probeLabel: "true"})
+	createNamespace(ctx, probeNamespace(), nil, probeLabel)
+	createNamespace(ctx, probePeerNamespace(), map[string]string{probeLabel: "true"}, probeLabel)
 	policy := &networking.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: probePolicyName, Namespace: probeNamespace()},
 		Spec: networking.NetworkPolicySpec{
@@ -269,11 +272,6 @@ func createProbePolicy(ctx context.Context) {
 		return policyEndpointNames(ctx, probePolicyKey())
 	}).WithContext(ctx).WithTimeout(2*time.Minute).WithPolling(time.Second).ShouldNot(BeEmpty(),
 		"the probe policy has no PolicyEndpoint")
-}
-
-func deleteProbeNamespaces() {
-	deleteNamespace(probeNamespace(), probeLabel)
-	deleteNamespace(probePeerNamespace(), probeLabel)
 }
 
 func probePolicyKey() types.NamespacedName {
