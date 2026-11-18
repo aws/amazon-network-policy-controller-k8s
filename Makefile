@@ -77,9 +77,10 @@ vet: ## Run go vet against code.
 
 ## Set CHECK_DEPS_STRICT=true to exit non-zero when any direct dependency is out of date.
 ## Updates to a pseudo-version (an untagged commit, e.g. golang.org/x/exp) are listed but never fail the check,
-## since such modules publish a new one with every upstream commit.
+## since such modules publish a new one with every upstream commit. The pattern is the one
+## golang.org/x/mod/module.IsPseudoVersion uses.
 CHECK_DEPS_STRICT ?= false
-PSEUDO_VERSION_UPDATE = (v[0-9]+\.0\.0-|[^ ]*[-.]0\.)[0-9]{14}-[0-9a-f]{12}(\+incompatible)?$$
+PSEUDO_VERSION_UPDATE = v[0-9]+\.(0\.0-|[0-9]+\.[0-9]+-([^+ ]*\.)?0\.)[0-9]{14}-[A-Za-z0-9]+(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$$
 .PHONY: check-deps
 check-deps: ## List direct dependencies in go.mod that have newer versions available.
 	@if [ "$$(go env GOPROXY)" = "off" ]; then \
