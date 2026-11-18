@@ -41,6 +41,11 @@ const (
 	kwokNodeTypeValue  = "kwok"
 	// scaleTestLabel marks every object created by this test so that cleanup only touches our objects.
 	scaleTestLabel = "networking.k8s.aws/npc-startup-scale-test"
+	// churnLabel marks the pods created by the pod churn spec. They do not carry scaleTestLabel, which the broad
+	// policies select, so that no generated policy selects them.
+	churnLabel = "networking.k8s.aws/npc-startup-scale-churn"
+	// probeLabel marks the probe pods of the pod churn spec, and the namespace its probe policy's peer selects.
+	probeLabel = "networking.k8s.aws/npc-startup-scale-probe"
 	// kwokPodsPerNode is how many pods fit in a kwok node's /22 pod CIDR, with headroom.
 	kwokPodsPerNode = 1000
 )
