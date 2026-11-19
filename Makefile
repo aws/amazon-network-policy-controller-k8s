@@ -76,7 +76,11 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 ## Set CHECK_DEPS_STRICT=true to exit non-zero when any direct dependency is out of date.
+## Updates to a pseudo-version (an untagged commit, e.g. golang.org/x/exp) are listed but never fail the check,
+## since such modules publish a new one with every upstream commit. The pattern is the one
+## golang.org/x/mod/module.IsPseudoVersion uses.
 CHECK_DEPS_STRICT ?= false
+PSEUDO_VERSION_UPDATE = v[0-9]+\.(0\.0-|[0-9]+\.[0-9]+-([^+ ]*\.)?0\.)[0-9]{14}-[A-Za-z0-9]+(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$$
 .PHONY: check-deps
 check-deps: ## List direct dependencies in go.mod that have newer versions available.
 	@if [ "$$(go env GOPROXY)" = "off" ]; then \
@@ -90,6 +94,12 @@ check-deps: ## List direct dependencies in go.mod that have newer versions avail
 		echo "ERROR: could not look up the latest dependency versions; results would be incomplete:" >&2; \
 		head -n 20 "$$errfile" >&2; \
 		exit 1; \
+	fi; \
+	pseudo="$$(echo "$$outdated" | grep -E ' $(PSEUDO_VERSION_UPDATE)' || true)"; \
+	outdated="$$(echo "$$outdated" | grep -vE ' $(PSEUDO_VERSION_UPDATE)' || true)"; \
+	if [ -n "$$pseudo" ]; then \
+		echo "Direct dependencies with a newer pseudo-version (not counted as out of date):"; \
+		echo "$$pseudo" | column -t; \
 	fi; \
 	if [ -z "$$outdated" ]; then \
 		echo "All direct dependencies are up to date."; \
