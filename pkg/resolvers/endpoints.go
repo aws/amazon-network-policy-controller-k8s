@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -83,6 +84,12 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 // In the NP schema, ports and from (peers) are siblings at the rule level — ports apply equally
 // to all peers. This function resolves ports once per rule, then resolves peers using those ports.
 func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
+	// The apiserver defaults spec.policyTypes on admission, so a missing entry
+	// here means the direction is intentionally not enforced — skip even if
+	// spec.ingress is populated.
+	if !slices.Contains(policy.Spec.PolicyTypes, networking.PolicyTypeIngress) {
+		return nil, nil
+	}
 	var ingressEndpoints []policyinfo.EndpointInfo
 	for _, rule := range policy.Spec.Ingress {
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
@@ -196,6 +203,9 @@ func (r *defaultEndpointsResolver) buildIPBlockEndpoint(ipBlock *networking.IPBl
 // Service ClusterIP resolution is fused into the same peer/namespace iteration to avoid
 // duplicate resolveNamespaces calls.
 func (r *defaultEndpointsResolver) computeEgressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
+	if !slices.Contains(policy.Spec.PolicyTypes, networking.PolicyTypeEgress) {
+		return nil, nil
+	}
 	var egressEndpoints []policyinfo.EndpointInfo
 	for _, rule := range policy.Spec.Egress {
 		r.logger.V(1).Info("computing egress addresses", "peers", rule.To)
