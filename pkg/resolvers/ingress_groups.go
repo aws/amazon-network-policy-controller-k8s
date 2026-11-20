@@ -29,9 +29,11 @@ type IngressGroup struct {
 const ungroupedKey = ""
 
 // ResolveGroups partitions a policy's ingress rules and target pods by the ports each pod
-// resolved. Egress is returned once: it resolves against peer pods, so it does not vary by group.
+// resolved. A rule whose ports do not name a container port resolves the same way for every pod,
+// so it is returned once as shared ingress rather than copied into each group, keeping a rule with
+// a large peer set in one object. Egress is returned once too: it resolves against peer pods.
 func (r *defaultEndpointsResolver) ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
-	[]policyinfo.EndpointInfo, error) {
+	[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error) {
 	var (
 		egressEndpoints []policyinfo.EndpointInfo
 		podEndpoints    []policyinfo.PodEndpoint
@@ -58,10 +60,13 @@ func (r *defaultEndpointsResolver) ResolveGroups(ctx context.Context, policy *ne
 	wg.Wait()
 
 	if err := stderrors.Join(egressErr, podErr, planErr); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	if len(plan.groupKeys) > 1 {
+	// Only a policy that splits has anything to share: with one group the rules all go in it, so
+	// the output matches what the resolver produced before grouping existed.
+	split := len(plan.groupKeys) > 1
+	if split {
 		r.logger.Info("named ingress ports resolve to more than one port set across the pods this policy selects, emitting one PolicyEndpoint group per set",
 			"policy", k8s.NamespacedName(policy), "portSets", len(plan.groupKeys))
 	}
@@ -69,11 +74,14 @@ func (r *defaultEndpointsResolver) ResolveGroups(ctx context.Context, policy *ne
 	groups := make([]IngressGroup, 0, len(plan.groupKeys))
 	for _, key := range plan.groupKeys {
 		perRule := plan.ruleKeysByGroup[key]
-		ingress, err := r.buildIngressEndpoints(ctx, policy, func(i int, _ networking.NetworkPolicyIngressRule) []policyinfo.Port {
-			return plan.portsByRule[i][perRule[i]]
+		ingress, err := r.buildIngressEndpoints(ctx, policy, func(i int, _ networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool) {
+			if split && !plan.podDependent[i] {
+				return nil, false
+			}
+			return plan.portsByRule[i][perRule[i]], true
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		groups = append(groups, IngressGroup{
 			Key:          plan.publicKey(key),
@@ -81,13 +89,31 @@ func (r *defaultEndpointsResolver) ResolveGroups(ctx context.Context, policy *ne
 			PodEndpoints: plan.podEndpointsFor(key, podEndpoints),
 		})
 	}
-	return groups, egressEndpoints, nil
+
+	var sharedIngress []policyinfo.EndpointInfo
+	if split {
+		// The same ports the loop above would have taken: a pod-independent rule keys on
+		// ungroupedKey in every group.
+		shared, err := r.buildIngressEndpoints(ctx, policy, func(i int, _ networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool) {
+			if plan.podDependent[i] {
+				return nil, false
+			}
+			return plan.portsByRule[i][ungroupedKey], true
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		sharedIngress = shared
+	}
+	return groups, sharedIngress, egressEndpoints, nil
 }
 
 // ingressPortPlan holds the distinct port sets per ingress rule and each pod's place in them.
 type ingressPortPlan struct {
 	// portsByRule[i][k] is rule i's ports for the pods whose rule-i key is k.
 	portsByRule []map[string][]policyinfo.Port
+	// podDependent[i] is true when rule i names a port, so its ports vary by pod.
+	podDependent []bool
 	// ruleKeysByGroup maps a group to its per-rule keys, in rule order.
 	ruleKeysByGroup map[string][]string
 	// groupKeys is every group, in first-seen pod order.
@@ -125,6 +151,7 @@ func (r *defaultEndpointsResolver) planIngressPorts(ctx context.Context, policy 
 	rules := policy.Spec.Ingress
 	plan := &ingressPortPlan{
 		portsByRule:     make([]map[string][]policyinfo.Port, len(rules)),
+		podDependent:    make([]bool, len(rules)),
 		ruleKeysByGroup: map[string][]string{},
 		podGroup:        map[types.NamespacedName]string{},
 	}
@@ -155,6 +182,7 @@ func (r *defaultEndpointsResolver) planIngressPorts(ctx context.Context, policy 
 			plan.portsByRule[i][ungroupedKey] = ports
 			continue
 		}
+		plan.podDependent[i] = true
 		perRulePodKeys[i] = map[types.NamespacedName]string{}
 		for j := range pods {
 			pod := &pods[j]

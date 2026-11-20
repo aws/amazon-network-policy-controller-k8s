@@ -25,6 +25,7 @@ import (
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	policyequality "github.com/aws/amazon-network-policy-controller-k8s/pkg/equality"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/metrics"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
@@ -101,10 +102,11 @@ type policyEndpointsManager struct {
 func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networking.NetworkPolicy) error {
 	computeStart := time.Now()
 
-	ingressGroups, egressRules, err := m.endpointsResolver.ResolveGroups(ctx, policy)
+	ingressGroups, sharedIngressRules, egressRules, err := m.endpointsResolver.ResolveGroups(ctx, policy)
 	if err != nil {
 		return err
 	}
+	metrics.SetPolicyTargetGroups(k8s.NamespacedName(policy), len(ingressGroups))
 
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
 	if err := m.k8sClient.List(ctx, policyEndpointList,
@@ -117,7 +119,7 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
 	}
 
-	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressGroups, egressRules)
+	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressGroups, sharedIngressRules, egressRules)
 	if err != nil {
 		return err
 	}
@@ -176,6 +178,7 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 		}
 		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
+	metrics.ForgetPolicyTargetGroups(k8s.NamespacedName(policy))
 	return nil
 }
 
@@ -264,7 +267,7 @@ func (m *policyEndpointsManager) CleanupANP(ctx context.Context, anp *policyinfo
 // The return values are list of policy endpoints to create, update and delete
 func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.NetworkPolicy,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressGroups []resolvers.IngressGroup,
-	egressEndpoints []policyinfo.EndpointInfo) ([]policyinfo.PolicyEndpoint,
+	sharedIngressEndpoints, egressEndpoints []policyinfo.EndpointInfo) ([]policyinfo.PolicyEndpoint,
 	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, error) {
 
 	// Create metadata for NetworkPolicy
@@ -296,9 +299,11 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 			updatePolicyEndpoints = append(updatePolicyEndpoints, u...)
 			deletePolicyEndpoints = append(deletePolicyEndpoints, d...)
 		}
-		// Egress does not vary by group, so it stays ungrouped and applies to every pod. This pass
-		// also drains any pre-grouping PolicyEndpoint of the ingress and pods it used to carry.
-		c, u, d := m.packPolicyEndpointGroup(npMetadata, "", byGroup[""], nil, egressEndpoints, nil)
+		// Egress and the ingress rules that named no port do not vary by group, so they stay
+		// ungrouped and apply to every pod: one copy serves every group rather than each group
+		// carrying its own. This pass also drains any pre-grouping PolicyEndpoint of the pods it
+		// used to carry.
+		c, u, d := m.packPolicyEndpointGroup(npMetadata, "", byGroup[""], sharedIngressEndpoints, egressEndpoints, nil)
 		createPolicyEndpoints = append(createPolicyEndpoints, c...)
 		updatePolicyEndpoints = append(updatePolicyEndpoints, u...)
 		deletePolicyEndpoints = append(deletePolicyEndpoints, d...)

@@ -31,9 +31,10 @@ type EndpointsResolver interface {
 		[]policyinfo.PodEndpoint, error)
 
 	// ResolveGroups is Resolve with the ingress rules and target pods partitioned by the ports
-	// each pod resolved, and the egress rules returned once.
+	// each pod resolved. The second return holds the ingress rules that do not vary by pod, and
+	// the third the egress rules, both of which apply to every selected pod.
 	ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
-		[]policyinfo.EndpointInfo, error)
+		[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error)
 }
 
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
@@ -92,8 +93,8 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 // In the NP schema, ports and from (peers) are siblings at the rule level — ports apply equally
 // to all peers. This function resolves ports once per rule, then resolves peers using those ports.
 func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
-	endpoints, err := r.buildIngressEndpoints(ctx, policy, func(_ int, rule networking.NetworkPolicyIngressRule) []policyinfo.Port {
-		return r.resolveIngressPorts(ctx, policy, rule.Ports)
+	endpoints, err := r.buildIngressEndpoints(ctx, policy, func(_ int, rule networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool) {
+		return r.resolveIngressPorts(ctx, policy, rule.Ports), true
 	})
 	if err != nil {
 		return nil, err
@@ -104,14 +105,18 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 
 // buildIngressEndpoints walks the policy's ingress rules and peers, taking each rule's resolved
 // ports from portsFor. Shared by the union path and the per-group path so the peer walk has one
-// implementation.
+// implementation. A rule portsFor declines is left out, which is how the group and shared passes
+// each take their half of the rules.
 func (r *defaultEndpointsResolver) buildIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy,
-	portsFor func(int, networking.NetworkPolicyIngressRule) []policyinfo.Port) ([]policyinfo.EndpointInfo, error) {
+	portsFor func(int, networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool)) ([]policyinfo.EndpointInfo, error) {
 	var ingressEndpoints []policyinfo.EndpointInfo
 	for i, rule := range policy.Spec.Ingress {
+		resolvedPorts, include := portsFor(i, rule)
+		if !include {
+			continue
+		}
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
 
-		resolvedPorts := portsFor(i, rule)
 		if len(rule.Ports) != 0 && len(resolvedPorts) == 0 {
 			r.logger.Info("Couldn't resolve any ports for ingress rule, skipping",
 				"policy", k8s.NamespacedName(policy), "ports", rule.Ports)

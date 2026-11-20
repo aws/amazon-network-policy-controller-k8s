@@ -2,12 +2,14 @@ package metrics
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	networking "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -43,10 +45,69 @@ var (
 			Help: "Indicates if advanced network policies (ANP or CNP) are in use (1 if enabled, 0 if disabled)",
 		},
 	)
+
+	SplitPolicyCount = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "network_policy_split_policies_total",
+			Help: "Number of NetworkPolicies whose selected pods resolve a named port differently, so they are split into more than one PolicyEndpoint target group",
+		},
+	)
+
+	MaxPolicyTargetGroups = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "network_policy_target_groups_max",
+			Help: "Largest number of PolicyEndpoint target groups any single NetworkPolicy is split into, 0 when none are split",
+		},
+	)
 )
 
+// splitPolicies is the group count of every policy currently split, keyed by policy. The two
+// gauges above are a population, not a rate, so they are recomputed from this rather than
+// incremented: a reconcile reports a policy's whole count each time, including when it drops
+// back to one group.
+var splitPolicies = struct {
+	sync.Mutex
+	counts map[types.NamespacedName]int
+}{counts: map[types.NamespacedName]int{}}
+
 func init() {
-	metrics.Registry.MustRegister(PolicyReconciliations, PolicyReconcileLatency, PolicyObjectCount, AdvancedNetworkPolicyEnabled)
+	metrics.Registry.MustRegister(PolicyReconciliations, PolicyReconcileLatency, PolicyObjectCount,
+		AdvancedNetworkPolicyEnabled, SplitPolicyCount, MaxPolicyTargetGroups)
+}
+
+// SetPolicyTargetGroups records how many target groups a policy resolved into. A count of one or
+// zero means the policy is not split, which is the common case and the only case before named
+// ports resolve differently across a policy's pods.
+func SetPolicyTargetGroups(policy types.NamespacedName, groups int) {
+	splitPolicies.Lock()
+	defer splitPolicies.Unlock()
+
+	if groups > 1 {
+		splitPolicies.counts[policy] = groups
+	} else {
+		delete(splitPolicies.counts, policy)
+	}
+	refreshSplitPolicyGaugesLocked()
+}
+
+// ForgetPolicyTargetGroups drops a deleted policy, so its groups stop counting toward the gauges.
+func ForgetPolicyTargetGroups(policy types.NamespacedName) {
+	splitPolicies.Lock()
+	defer splitPolicies.Unlock()
+
+	delete(splitPolicies.counts, policy)
+	refreshSplitPolicyGaugesLocked()
+}
+
+func refreshSplitPolicyGaugesLocked() {
+	max := 0
+	for _, groups := range splitPolicies.counts {
+		if groups > max {
+			max = groups
+		}
+	}
+	SplitPolicyCount.Set(float64(len(splitPolicies.counts)))
+	MaxPolicyTargetGroups.Set(float64(max))
 }
 
 func RecordPolicyReconcileLatency(policyType string, duration time.Duration) {

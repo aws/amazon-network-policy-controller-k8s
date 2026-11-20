@@ -28,12 +28,14 @@ func (m *MockEndpointsResolver) Resolve(ctx context.Context, policy *networking.
 
 // The CNP resolver only uses Resolve. ResolveGroups is here to satisfy the interface, built from
 // Resolve so a test that stubs one gets both.
-func (m *MockEndpointsResolver) ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup, []policyinfo.EndpointInfo, error) {
+func (m *MockEndpointsResolver) ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
+	[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error) {
 	ingress, egress, podEndpoints, err := m.Resolve(ctx, policy)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return []IngressGroup{{Ingress: ingress, PodEndpoints: podEndpoints}}, egress, nil
+	// A single group holds every rule, so there is no shared ingress to return.
+	return []IngressGroup{{Ingress: ingress, PodEndpoints: podEndpoints}}, nil, egress, nil
 }
 
 func TestClusterNetworkPolicyEndpointsResolver_mergeClusterEndpointInfo(t *testing.T) {
