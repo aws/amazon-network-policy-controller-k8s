@@ -18,6 +18,7 @@ import (
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
 func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
@@ -456,8 +457,10 @@ func Test_policyEndpointsManager_computePolicyEndpoints(t *testing.T) {
 			m := &policyEndpointsManager{
 				endpointChunkSize: tt.fields.endpointChunkSize,
 			}
+			// One ungrouped group, which is what a policy whose pods agree resolves to.
+			groups := []resolvers.IngressGroup{{Ingress: tt.args.ingressRules, PodEndpoints: tt.args.podselectorEndpoints}}
 			createList, updateList, deleteList, err := m.computePolicyEndpoints(tt.args.policy, tt.args.policyEndpoints,
-				tt.args.ingressRules, tt.args.egressRules, tt.args.podselectorEndpoints)
+				groups, nil, tt.args.egressRules)
 
 			if len(tt.wantErr) > 0 {
 				assert.EqualError(t, err, tt.wantErr)
@@ -1629,4 +1632,38 @@ func Test_combineClusterRulesEndpoints(t *testing.T) {
 			assert.ElementsMatch(t, tt.expected, result)
 		})
 	}
+}
+
+// A split policy carries its pod-independent ingress once, in the ungrouped PolicyEndpoint that
+// the agent applies to every pod, rather than a copy in each group's object.
+func Test_policyEndpointsManager_sharedIngressStaysUngrouped(t *testing.T) {
+	m := &policyEndpointsManager{endpointChunkSize: 100, logger: logr.Discard()}
+	policy := &networking.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "np", Namespace: "ns"},
+		Spec: networking.NetworkPolicySpec{
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeIngress},
+		},
+	}
+	ingress := func(cidr string) []policyinfo.EndpointInfo {
+		return []policyinfo.EndpointInfo{{CIDR: policyinfo.NetworkAddress(cidr)}}
+	}
+	groups := []resolvers.IngressGroup{
+		{Key: "g1", Ingress: ingress("1.1.1.1/32"), PodEndpoints: []policyinfo.PodEndpoint{{Namespace: "ns", Name: "a"}}},
+		{Key: "g2", Ingress: ingress("2.2.2.2/32"), PodEndpoints: []policyinfo.PodEndpoint{{Namespace: "ns", Name: "b"}}},
+	}
+
+	createList, _, _, err := m.computePolicyEndpoints(policy, nil, groups, ingress("9.9.9.9/32"), nil)
+	assert.NoError(t, err)
+
+	byGroup := map[string][]string{}
+	for _, pe := range createList {
+		for _, in := range pe.Spec.Ingress {
+			byGroup[pe.Spec.TargetGroup] = append(byGroup[pe.Spec.TargetGroup], string(in.CIDR))
+		}
+	}
+	assert.Equal(t, map[string][]string{
+		"g1": {"1.1.1.1/32"},
+		"g2": {"2.2.2.2/32"},
+		"":   {"9.9.9.9/32"},
+	}, byGroup, "the shared rule belongs to the ungrouped object alone, not to either group")
 }

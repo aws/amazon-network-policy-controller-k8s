@@ -235,6 +235,18 @@ spec:
                 - name
                 - namespace
                 type: object
+              targetGroup:
+                description: |-
+                  TargetGroup identifies the resolved-port group this PolicyEndpoint belongs to. Named ports
+                  resolve per pod, so when the selected pods disagree the controller emits one set of
+                  PolicyEndpoints per port set and applies each only to its own group's pods.
+
+                  Empty means ungrouped and applies to every pod of the parent policy, which is what agents
+                  did before this field existed. The value is an opaque short hash, compared only for
+                  equality; the length bound is the DNS label limit, which is headroom rather than a
+                  requirement.
+                maxLength: 63
+                type: string
             required:
             - policyRef
             type: object

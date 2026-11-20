@@ -5,10 +5,12 @@ import (
 	"testing"
 
 	"github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -187,5 +189,57 @@ func TestOnPolicyCreatedAndDeleted(t *testing.T) {
 	AdvancedNetworkPolicyEnabled.Write(metric)
 	if metric.GetGauge().GetValue() != 0 {
 		t.Errorf("Expected advanced_network_policy_enabled to be 0 after deleting NetworkPolicy, got %f", metric.GetGauge().GetValue())
+	}
+}
+
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := g.Write(metric); err != nil {
+		t.Fatalf("reading gauge: %v", err)
+	}
+	return metric.GetGauge().GetValue()
+}
+
+func TestSetPolicyTargetGroups(t *testing.T) {
+	a := types.NamespacedName{Namespace: "ns", Name: "a"}
+	b := types.NamespacedName{Namespace: "ns", Name: "b"}
+	t.Cleanup(func() {
+		ForgetPolicyTargetGroups(a)
+		ForgetPolicyTargetGroups(b)
+	})
+
+	// One group is the unsplit case and must not count, so the gauges stay at zero on a
+	// cluster where no policy's pods disagree.
+	SetPolicyTargetGroups(a, 1)
+	if got := gaugeValue(t, SplitPolicyCount); got != 0 {
+		t.Errorf("one group must not count as split, got %f", got)
+	}
+
+	SetPolicyTargetGroups(a, 3)
+	SetPolicyTargetGroups(b, 2)
+	if got := gaugeValue(t, SplitPolicyCount); got != 2 {
+		t.Errorf("expected 2 split policies, got %f", got)
+	}
+	if got := gaugeValue(t, MaxPolicyTargetGroups); got != 3 {
+		t.Errorf("expected max 3 groups, got %f", got)
+	}
+
+	// Recomputed, not decremented, so a policy whose pods come back into agreement drops out
+	// and the max falls with it.
+	SetPolicyTargetGroups(a, 1)
+	if got := gaugeValue(t, SplitPolicyCount); got != 1 {
+		t.Errorf("expected 1 split policy after a merged back, got %f", got)
+	}
+	if got := gaugeValue(t, MaxPolicyTargetGroups); got != 2 {
+		t.Errorf("expected max 2 groups after a merged back, got %f", got)
+	}
+
+	ForgetPolicyTargetGroups(b)
+	if got := gaugeValue(t, SplitPolicyCount); got != 0 {
+		t.Errorf("a deleted policy must stop counting, got %f", got)
+	}
+	if got := gaugeValue(t, MaxPolicyTargetGroups); got != 0 {
+		t.Errorf("expected max 0 with nothing split, got %f", got)
 	}
 }
