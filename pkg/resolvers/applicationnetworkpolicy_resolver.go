@@ -75,6 +75,15 @@ func (r *applicationNetworkPolicyEndpointsResolver) convertApplicationNetworkPol
 	// Convert ANP egress rules to standard NetworkPolicy egress rules (CIDR only)
 	var egressRules []networking.NetworkPolicyEgressRule
 	for _, rule := range applicationNetworkPolicy.Spec.Egress {
+		// An empty destination list means all destinations. Preserve the rule so
+		// the base resolver emits the corresponding all-destination endpoints.
+		if len(rule.To) == 0 {
+			egressRules = append(egressRules, networking.NetworkPolicyEgressRule{
+				Ports: rule.Ports,
+			})
+			continue
+		}
+
 		var networkPolicyPeers []networking.NetworkPolicyPeer
 		for _, peer := range rule.To {
 			// Only include peers that don't have domain names (CIDR/pod/namespace selectors only)
@@ -114,6 +123,10 @@ func (r *applicationNetworkPolicyEndpointsResolver) computeApplicationNetworkPol
 	// Check if we have CIDR-based egress rules
 	hasCIDREgress := false
 	for _, rule := range applicationNetworkPolicy.Spec.Egress {
+		if len(rule.To) == 0 {
+			hasCIDREgress = true
+			break
+		}
 		for _, peer := range rule.To {
 			if len(peer.DomainNames) == 0 {
 				hasCIDREgress = true

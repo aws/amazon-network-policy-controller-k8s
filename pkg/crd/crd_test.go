@@ -18,6 +18,7 @@ package crd
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
@@ -45,6 +46,28 @@ func Test_decodeCRDs(t *testing.T) {
 	// Verify the first CRD has expected properties
 	g.Expect(crds[0].Spec.Group).To(Equal("networking.k8s.aws"))
 	g.Expect(crds[0].Spec.Names.Kind).To(Equal("ApplicationNetworkPolicy"))
+}
+
+func TestApplicationNetworkPolicyDomainNamePatternRejectsNonLettersFromASCIIGap(t *testing.T) {
+	g := NewWithT(t)
+	crds, err := decodeCRDs()
+	g.Expect(err).ToNot(HaveOccurred())
+
+	schema := crds[0].Spec.Versions[0].Schema.OpenAPIV3Schema
+	domainNameSchema := schema.Properties["spec"].Properties["egress"].Items.Schema.Properties["to"].Items.Schema.Properties["domainNames"].Items.Schema
+	pattern, err := regexp.Compile(domainNameSchema.Pattern)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	for _, invalidDomain := range []string{
+		"example.[om",
+		"example.\\om",
+		"example.]om",
+		"example.^om",
+		"example._om",
+		"example.`om",
+	} {
+		g.Expect(pattern.MatchString(invalidDomain)).To(BeFalse(), invalidDomain)
+	}
 }
 
 func Test_ensureCRD(t *testing.T) {

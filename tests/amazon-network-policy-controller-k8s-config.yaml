@@ -56,7 +56,7 @@ spec:
                       description: |-
                         DomainName is the FQDN for the endpoint (mutually exclusive with CIDR, egress-only)
                         Note: This field should only be used in egress rules, not ingress
-                      pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                      pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                       type: string
                     except:
                       description: Except is the exceptions to the CIDR ranges mentioned
@@ -104,7 +104,7 @@ spec:
                       description: |-
                         DomainName is the FQDN for the endpoint (mutually exclusive with CIDR, egress-only)
                         Note: This field should only be used in egress rules, not ingress
-                      pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                      pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                       type: string
                     except:
                       description: Except is the exceptions to the CIDR ranges mentioned
@@ -383,7 +383,7 @@ spec:
                                 and\n\t    \"latest.blog.kubernetes.io\" match, however
                                 \"kubernetes.io\", and\n\t    \"wikipedia.org\" do
                                 not."
-                              pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                              pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                               type: string
                             minItems: 1
                             type: array
@@ -1017,7 +1017,7 @@ spec:
                                 and\n\t    \"latest.blog.kubernetes.io\" match, however
                                 \"kubernetes.io\", and\n\t    \"wikipedia.org\" do
                                 not."
-                              pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                              pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                               type: string
                             maxItems: 25
                             minItems: 1
@@ -1785,7 +1785,7 @@ spec:
                       type: string
                     domainName:
                       description: DomainName is the FQDN for the endpoint (egress-only)
-                      pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                      pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                       type: string
                     ports:
                       description: Ports is the list of ports
@@ -1834,7 +1834,7 @@ spec:
                       type: string
                     domainName:
                       description: DomainName is the FQDN for the endpoint (egress-only)
-                      pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                      pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                       type: string
                     ports:
                       description: Ports is the list of ports

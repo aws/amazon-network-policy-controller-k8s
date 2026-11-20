@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: invalid-domain
+spec:
+  podSelector:
+    matchLabels:
+      app: domain-validation
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - domainNames:
+      - ^x.example.com
+    ports:
+    - protocol: TCP
+      port: 443

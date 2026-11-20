@@ -4,6 +4,7 @@ This package contains shell scripts and libraries used for running e2e tests and
 
 `run-cyclonus-tests.sh` Runs cyclonus tests against an existing cluster and validates the output
 `update-controller-image-dataplane.sh` Deploys the `amazon-network-policy-controller-k8s` controller on Dataplane
+`run-regression-e2e.sh` Runs focused ANP and CRD regression tests against an existing cluster
 
 ### Cyclonus tests
 `run-cyclonus-tests.sh` script runs the cyclonus suite against an existing cluster. It provides the option of disabling the control plane `amazon-network-policy-controller-k8s` controller if you are deploying a custom/dev version of the controller installed on dataplane. The script also skips CNI installation if `SKIP_CNI_INSTALLATION` environment variable is set. 
@@ -23,3 +24,29 @@ The workflow needs the `OSS_ROLE_ARN` repository secret: an IAM role trusted for
 ```bash
 aws ecr create-repository --repository-name amazon/amazon-network-policy-controller-k8s --region us-west-2
 ``` `TEST_IMAGE_REGISTRY` is optional and points cyclonus at a mirror of its test images.
+
+### Focused regression E2E
+
+`run-regression-e2e.sh` is an opt-in test for a cluster where the candidate
+Network Policy Controller image, Network Policy Agent, and generated CRDs are
+already installed. It creates an isolated `npc-regression-e2e` namespace,
+which it deletes on exit.
+
+It verifies:
+
+* an ANP egress rule with omitted `to` produces IPv4 and IPv6 allow-all
+  `PolicyEndpoint` entries constrained to TCP/UDP 53;
+* DNS and `example.com:443` work, while `example.com:80` is denied by the
+  Network Policy Agent; and
+* the API server accepts `x.example.com` but rejects the ASCII-gap regression
+  value `^x.example.com`.
+
+Run it after deploying the candidate artifacts:
+
+```sh
+KUBECONFIG=/path/to/kubeconfig make e2e-regression
+```
+
+Set `E2E_NAMESPACE` to use a different namespace. `E2E_TIMEOUT` changes the
+default 180-second readiness and reconciliation timeout and must be a positive
+whole-second duration such as `180s`.
