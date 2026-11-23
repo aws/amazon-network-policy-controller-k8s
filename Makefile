@@ -75,15 +75,50 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+## Set CHECK_DEPS_STRICT=true to exit non-zero when any direct dependency is out of date.
+## Updates to a pseudo-version (an untagged commit, e.g. golang.org/x/exp) are listed but never fail the check,
+## since such modules publish a new one with every upstream commit. The pattern is the one
+## golang.org/x/mod/module.IsPseudoVersion uses.
+CHECK_DEPS_STRICT ?= false
+PSEUDO_VERSION_UPDATE = v[0-9]+\.(0\.0-|[0-9]+\.[0-9]+-([^+ ]*\.)?0\.)[0-9]{14}-[A-Za-z0-9]+(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$$
+.PHONY: check-deps
+check-deps: ## List direct dependencies in go.mod that have newer versions available.
+	@if [ "$$(go env GOPROXY)" = "off" ]; then \
+		echo "ERROR: GOPROXY=off disables module lookups, so updates cannot be detected." >&2; \
+		exit 1; \
+	fi; \
+	errfile="$$(mktemp)"; trap 'rm -f "$$errfile"' EXIT; \
+	outdated="$$(go list -m -u -f '{{if and (not .Indirect) (not .Main) .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' all 2>"$$errfile")"; \
+	status=$$?; \
+	if [ $$status -ne 0 ] || [ -s "$$errfile" ]; then \
+		echo "ERROR: could not look up the latest dependency versions; results would be incomplete:" >&2; \
+		head -n 20 "$$errfile" >&2; \
+		exit 1; \
+	fi; \
+	pseudo="$$(echo "$$outdated" | grep -E ' $(PSEUDO_VERSION_UPDATE)' || true)"; \
+	outdated="$$(echo "$$outdated" | grep -vE ' $(PSEUDO_VERSION_UPDATE)' || true)"; \
+	if [ -n "$$pseudo" ]; then \
+		echo "Direct dependencies with a newer pseudo-version (not counted as out of date):"; \
+		echo "$$pseudo" | column -t; \
+	fi; \
+	if [ -z "$$outdated" ]; then \
+		echo "All direct dependencies are up to date."; \
+	else \
+		echo "Out-of-date direct dependencies:"; \
+		echo "$$outdated" | column -t; \
+		if [ "$(CHECK_DEPS_STRICT)" = "true" ]; then exit 1; fi; \
+	fi
+
 .PHONY: test
 test: manifests generate fmt vet envtest prepare-embed ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
 
 ##@ Build
+# sed -i.bak (suffix attached) is the in-place form both GNU and BSD/macOS sed accept.
 .PHONY: prepare-embed
 prepare-embed: ## Prepare files for go:embed.
 	cat config/crd/bases/*.yaml > pkg/crd/crds.yaml
-	sed -i '1834s/v0\.17\.0/v0.11.3/' pkg/crd/crds.yaml
+	sed -i.bak '1834s/v0\.17\.0/v0.11.3/' pkg/crd/crds.yaml && rm -f pkg/crd/crds.yaml.bak
 
 
 .PHONY: build

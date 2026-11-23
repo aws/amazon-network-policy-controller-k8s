@@ -15,6 +15,7 @@ import (
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	mock_client "github.com/aws/amazon-network-policy-controller-k8s/mocks/controller-runtime/client"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
 func Test_policyReconciler_reconcileApplicationNetworkPolicy(t *testing.T) {
@@ -225,6 +226,16 @@ func (m *mockPolicyTracker) GetApplicationNetworkPoliciesWithNamespaceReferences
 
 func (m *mockPolicyTracker) GetApplicationNetworkPoliciesWithEgressRules() sets.Set[types.NamespacedName] {
 	return sets.Set[types.NamespacedName]{}
+}
+
+func (m *mockPolicyTracker) GetPolicyNamespaceSelectorPeers(
+	types.NamespacedName) ([]resolvers.NamespaceSelectorPeer, bool) {
+	return nil, false
+}
+
+func (m *mockPolicyTracker) GetApplicationNetworkPolicyNamespaceSelectorPeers(
+	types.NamespacedName) ([]resolvers.NamespaceSelectorPeer, bool) {
+	return nil, false
 }
 
 func Test_policyReconciler_reconcileClusterNetworkPolicy(t *testing.T) {

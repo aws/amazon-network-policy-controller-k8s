@@ -34,6 +34,7 @@ type controllerMetrics struct {
 	residentBytes   float64
 	heapInUseBytes  float64
 	reconcileErrors float64
+	cpuSeconds      float64
 }
 
 // scrapeControllerMetrics reads the metrics endpoint of a controller pod through the API server proxy.
@@ -66,6 +67,8 @@ func scrapeControllerMetrics(podName string) (controllerMetrics, error) {
 			m.residentBytes = value
 		case name == "go_memstats_heap_inuse_bytes":
 			m.heapInUseBytes = value
+		case name == "process_cpu_seconds_total":
+			m.cpuSeconds = value
 		}
 	}
 	return m, nil
