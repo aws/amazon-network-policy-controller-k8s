@@ -250,3 +250,8 @@ func (m *mockEndpointsResolver) ResolveGroups(ctx context.Context, policy *netwo
 	// A single group holds every rule, so there is no shared ingress to return.
 	return []IngressGroup{{Ingress: ingress, PodEndpoints: podEndpoints}}, nil, egress, nil
 }
+
+// The ANP resolver resolves no named ports per pod.
+func (m *mockEndpointsResolver) ResolvePodPorts(_ corev1.Pod, _ []networking.NetworkPolicyPort) []policyinfo.Port {
+	return nil
+}

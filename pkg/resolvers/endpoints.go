@@ -35,6 +35,10 @@ type EndpointsResolver interface {
 	// the third the egress rules, both of which apply to every selected pod.
 	ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
 		[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error)
+
+	// ResolvePodPorts resolves a rule's ports against one pod, so a caller that groups pods by
+	// what they resolved sees each pod's own ports rather than the union across pods.
+	ResolvePodPorts(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port
 }
 
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
@@ -406,6 +410,11 @@ func portSetKey(ports []policyinfo.Port) string {
 	sort.Strings(keys)
 	sum := sha256.Sum256([]byte(strings.Join(keys, ",")))
 	return hex.EncodeToString(sum[:])[:10]
+}
+
+// ResolvePodPorts resolves a rule's ports against one pod's container ports.
+func (r *defaultEndpointsResolver) ResolvePodPorts(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {
+	return dedupPorts(r.getPortList(pod, ports))
 }
 
 func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {

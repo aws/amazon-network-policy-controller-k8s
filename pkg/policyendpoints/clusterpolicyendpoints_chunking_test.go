@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
+	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
 )
 
 func Test_policyEndpointsManager_computeClusterPolicyEndpoints_chunking(t *testing.T) {
@@ -151,8 +152,10 @@ func Test_policyEndpointsManager_computeClusterPolicyEndpoints_chunking(t *testi
 				endpointChunkSize: tt.chunkSize,
 			}
 
+			// One ungrouped group, which is what a policy whose subject pods agree resolves to.
+			groups := []resolvers.ClusterIngressGroup{{Ingress: tt.ingressRules, PodEndpoints: tt.podSelectorEndpoints}}
 			createList, updateList, deleteList, err := m.computeClusterPolicyEndpoints(
-				tt.cnp, tt.existingCPEs, tt.ingressRules, tt.egressRules, tt.podSelectorEndpoints)
+				tt.cnp, tt.existingCPEs, groups, nil, tt.egressRules)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedCreateCount, len(createList), "create count mismatch")
