@@ -2,9 +2,13 @@ package resolvers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	stderrors "errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
@@ -25,6 +29,12 @@ type EndpointsResolver interface {
 	// Resolve returns the resolved endpoints for the given policy ingress, egress rules and pod selector labels.
 	Resolve(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, []policyinfo.EndpointInfo,
 		[]policyinfo.PodEndpoint, error)
+
+	// ResolveGroups is Resolve with the ingress rules and target pods partitioned by the ports
+	// each pod resolved. The second return holds the ingress rules that do not vary by pod, and
+	// the third the egress rules, both of which apply to every selected pod.
+	ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
+		[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error)
 }
 
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
@@ -83,14 +93,30 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 // In the NP schema, ports and from (peers) are siblings at the rule level — ports apply equally
 // to all peers. This function resolves ports once per rule, then resolves peers using those ports.
 func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
+	endpoints, err := r.buildIngressEndpoints(ctx, policy, func(_ int, rule networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool) {
+		return r.resolveIngressPorts(ctx, policy, rule.Ports), true
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.logger.V(1).Info("Resolved ingress rules", "policy", k8s.NamespacedName(policy), "addresses", endpoints)
+	return endpoints, nil
+}
+
+// buildIngressEndpoints walks the policy's ingress rules and peers, taking each rule's resolved
+// ports from portsFor. Shared by the union path and the per-group path so the peer walk has one
+// implementation. A rule portsFor declines is left out, which is how the group and shared passes
+// each take their half of the rules.
+func (r *defaultEndpointsResolver) buildIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy,
+	portsFor func(int, networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool)) ([]policyinfo.EndpointInfo, error) {
 	var ingressEndpoints []policyinfo.EndpointInfo
-	for _, rule := range policy.Spec.Ingress {
+	for i, rule := range policy.Spec.Ingress {
+		resolvedPorts, include := portsFor(i, rule)
+		if !include {
+			continue
+		}
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
 
-		// Step 1: Resolve ports once per rule.
-		// Named ports are resolved against the policy's destination pods.
-		// Numeric and nil (protocol-only) ports are resolved without pod lookups.
-		resolvedPorts := r.resolveIngressPorts(ctx, policy, rule.Ports)
 		if len(rule.Ports) != 0 && len(resolvedPorts) == 0 {
 			r.logger.Info("Couldn't resolve any ports for ingress rule, skipping",
 				"policy", k8s.NamespacedName(policy), "ports", rule.Ports)
@@ -133,7 +159,6 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 			}
 		}
 	}
-	r.logger.V(1).Info("Resolved ingress rules", "policy", k8s.NamespacedName(policy), "addresses", ingressEndpoints)
 	return ingressEndpoints, nil
 }
 
@@ -350,6 +375,37 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	r.logger.V(1).Info("Got ingress ports from dst pods", "port", dedupedPorts)
 
 	return dedupedPorts
+}
+
+// portKey identifies one resolved port entry. Shared by dedupPorts and portSetKey so the two
+// notions of "the same port" cannot drift.
+func portKey(port policyinfo.Port) string {
+	prot, p, ep := "", "", ""
+	if port.Protocol != nil {
+		prot = string(*port.Protocol)
+	}
+	if port.Port != nil {
+		p = strconv.FormatInt(int64(*port.Port), 10)
+	}
+	if port.EndPort != nil {
+		ep = strconv.FormatInt(int64(*port.EndPort), 10)
+	}
+	return fmt.Sprintf("%s@%s@%s", prot, p, ep)
+}
+
+// portSetKey is an order-independent identity for a port set. A content hash, not an ordinal, so
+// adding a workload to a policy does not renumber the groups that did not change.
+func portSetKey(ports []policyinfo.Port) string {
+	if len(ports) == 0 {
+		return "none" // resolved nothing, so the rule allows this pod nothing
+	}
+	keys := make([]string, 0, len(ports))
+	for _, p := range ports {
+		keys = append(keys, portKey(p))
+	}
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, ",")))
+	return hex.EncodeToString(sum[:])[:10]
 }
 
 func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {
@@ -763,18 +819,7 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(svc *corev1.Service, n
 func dedupPorts(policyPorts []policyinfo.Port) []policyinfo.Port {
 	ports := make(map[string]policyinfo.Port)
 	for _, port := range policyPorts {
-		prot, p, ep := "", "", ""
-		if port.Protocol != nil {
-			prot = string(*port.Protocol)
-		}
-		if port.Port != nil {
-			p = strconv.FormatInt(int64(*port.Port), 10)
-		}
-		if port.EndPort != nil {
-			ep = strconv.FormatInt(int64(*port.EndPort), 10)
-		}
-
-		ports[fmt.Sprintf("%s@%s@%s", prot, p, ep)] = port
+		ports[portKey(port)] = port
 	}
 	if len(ports) > 0 {
 		return maps.Values(ports)

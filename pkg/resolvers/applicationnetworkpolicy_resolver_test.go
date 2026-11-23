@@ -239,3 +239,14 @@ func (m *mockEndpointsResolver) Resolve(ctx context.Context, policy *networking.
 	}
 	return []policyinfo.EndpointInfo{}, []policyinfo.EndpointInfo{}, []policyinfo.PodEndpoint{}, nil
 }
+
+// The ANP resolver only uses Resolve. ResolveGroups is built from it so a stub serves both.
+func (m *mockEndpointsResolver) ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
+	[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error) {
+	ingress, egress, podEndpoints, err := m.Resolve(ctx, policy)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// A single group holds every rule, so there is no shared ingress to return.
+	return []IngressGroup{{Ingress: ingress, PodEndpoints: podEndpoints}}, nil, egress, nil
+}
