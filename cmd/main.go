@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -155,7 +156,12 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", healthz.Checker(func(req *http.Request) error {
+		if mgr.GetCache().WaitForCacheSync(req.Context()) {
+			return nil
+		}
+		return fmt.Errorf("informer cache not synced")
+	})); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
