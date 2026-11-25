@@ -58,6 +58,11 @@ type testConfig struct {
 	uninstallKwok         bool
 	createConcurrency     int
 	podCreateRate         int
+	churnRate             int
+	churnPodLifetime      time.Duration
+	churnWarmup           time.Duration
+	churnProbes           int
+	churnMaxDelay         time.Duration
 }
 
 // cacheSyncTimeout is controller-runtime's default CacheSyncTimeout, which the policy controller does not
@@ -143,6 +148,14 @@ func loadTestConfig() testConfig {
 		// Far below the 167 pods/s the tier-xl control plane schedules, since kwok also writes the status of every
 		// pod it starts. 10k pods take about 7 minutes.
 		podCreateRate: envIntOrDefault("NPC_SCALE_POD_CREATE_RATE", 25),
+		// Pod churn after startup (issue #288). Each churn pod produces a few resolved pod events (the IP and phase
+		// updates, the deletion). The default create rate is the workload's NPC_SCALE_POD_CREATE_RATE, plus as many
+		// deletes per second once the first pods expire.
+		churnRate:        envIntOrDefault("NPC_CHURN_RATE", 25),
+		churnPodLifetime: envDurationOrDefault("NPC_CHURN_POD_LIFETIME", 30*time.Second),
+		churnWarmup:      envDurationOrDefault("NPC_CHURN_WARMUP", 2*time.Minute),
+		churnProbes:      envIntOrDefault("NPC_CHURN_PROBES", 3),
+		churnMaxDelay:    envDurationOrDefault("NPC_CHURN_MAX_DELAY", 15*time.Second),
 	}
 
 	Expect(c.appLabels).To(BeNumerically(">", 0), "NPC_SCALE_APP_LABELS must be positive")
@@ -156,6 +169,20 @@ func loadTestConfig() testConfig {
 	// kwok assigns pod IPs from the node's /22.
 	Expect(c.kwokNodes*kwokPodsPerNode).To(BeNumerically(">=", c.pods),
 		"%d kwok nodes hold at most %d pods, raise NPC_SCALE_KWOK_NODES", c.kwokNodes, c.kwokNodes*kwokPodsPerNode)
+	if c.churnRate > 0 {
+		Expect(c.churnProbes).To(BeNumerically(">", 0), "NPC_CHURN_PROBES must be positive")
+		Expect(c.churnPodLifetime).To(BeNumerically(">", 0), "NPC_CHURN_POD_LIFETIME must be positive")
+		Expect(c.churnWarmup).To(BeNumerically(">=", 0), "NPC_CHURN_WARMUP must not be negative")
+		Expect(c.churnMaxDelay).To(BeNumerically(">", 0), "NPC_CHURN_MAX_DELAY must be positive")
+		Expect(4*c.churnProbes).To(BeNumerically("<=", c.kwokNodes),
+			"pod churn puts each of its %d probe pods on its own kwok node; lower NPC_CHURN_PROBES or raise "+
+				"NPC_SCALE_KWOK_NODES", 4*c.churnProbes)
+		// Pods are spread over the kwok nodes round robin, so the total is what has to fit.
+		live := c.pods + c.churnRate*int(c.churnPodLifetime.Seconds()+1) + 4*c.churnProbes
+		Expect(c.kwokNodes*kwokPodsPerNode).To(BeNumerically(">=", live),
+			"%d kwok nodes hold at most %d pods but pod churn keeps up to %d alive, raise NPC_SCALE_KWOK_NODES or "+
+				"lower NPC_CHURN_RATE", c.kwokNodes, c.kwokNodes*kwokPodsPerNode, live)
+	}
 	return c
 }
 
@@ -172,7 +199,11 @@ func workloadFor(name string) workload {
 	w.anpPercent = envIntOrDefault("NPC_SCALE_ANP_PERCENT", w.anpPercent)
 	w.cnps = envIntOrDefault("NPC_SCALE_CNPS", w.cnps)
 	w.ipBlocksPerPolicy = envIntOrDefault("NPC_SCALE_IPBLOCKS_PER_POLICY", w.ipBlocksPerPolicy)
+	w.exceptsPerIPBlock = envIntOrDefault("NPC_SCALE_EXCEPTS_PER_IPBLOCK", w.exceptsPerIPBlock)
 	Expect(w.namespaces).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACES must be positive")
+	// Each except is about 16 bytes in every policy object, so keep the total well inside etcd's limits.
+	Expect(cfg.policies*w.ipBlocksPerPolicy*w.exceptsPerIPBlock).To(BeNumerically("<=", 5_000_000),
+		"too many excepts in total (policies x ipBlocks x excepts), lower NPC_SCALE_POLICIES")
 	Expect(w.namespaceGroups).To(BeNumerically(">", 0), "NPC_SCALE_NAMESPACE_GROUPS must be positive")
 	return w
 }

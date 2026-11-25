@@ -2,9 +2,13 @@ package resolvers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	stderrors "errors"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
@@ -25,6 +29,12 @@ type EndpointsResolver interface {
 	// Resolve returns the resolved endpoints for the given policy ingress, egress rules and pod selector labels.
 	Resolve(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, []policyinfo.EndpointInfo,
 		[]policyinfo.PodEndpoint, error)
+
+	// ResolveGroups is Resolve with the ingress rules and target pods partitioned by the ports
+	// each pod resolved. The second return holds the ingress rules that do not vary by pod, and
+	// the third the egress rules, both of which apply to every selected pod.
+	ResolveGroups(ctx context.Context, policy *networking.NetworkPolicy) ([]IngressGroup,
+		[]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, error)
 }
 
 // NewEndpointsResolver constructs a new defaultEndpointsResolver
@@ -83,14 +93,30 @@ func (r *defaultEndpointsResolver) Resolve(ctx context.Context, policy *networki
 // In the NP schema, ports and from (peers) are siblings at the rule level — ports apply equally
 // to all peers. This function resolves ports once per rule, then resolves peers using those ports.
 func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, error) {
+	endpoints, err := r.buildIngressEndpoints(ctx, policy, func(_ int, rule networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool) {
+		return r.resolveIngressPorts(ctx, policy, rule.Ports), true
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.logger.V(1).Info("Resolved ingress rules", "policy", k8s.NamespacedName(policy), "addresses", endpoints)
+	return endpoints, nil
+}
+
+// buildIngressEndpoints walks the policy's ingress rules and peers, taking each rule's resolved
+// ports from portsFor. Shared by the union path and the per-group path so the peer walk has one
+// implementation. A rule portsFor declines is left out, which is how the group and shared passes
+// each take their half of the rules.
+func (r *defaultEndpointsResolver) buildIngressEndpoints(ctx context.Context, policy *networking.NetworkPolicy,
+	portsFor func(int, networking.NetworkPolicyIngressRule) ([]policyinfo.Port, bool)) ([]policyinfo.EndpointInfo, error) {
 	var ingressEndpoints []policyinfo.EndpointInfo
-	for _, rule := range policy.Spec.Ingress {
+	for i, rule := range policy.Spec.Ingress {
+		resolvedPorts, include := portsFor(i, rule)
+		if !include {
+			continue
+		}
 		r.logger.V(1).Info("computing ingress addresses", "peers", rule.From)
 
-		// Step 1: Resolve ports once per rule.
-		// Named ports are resolved against the policy's destination pods.
-		// Numeric and nil (protocol-only) ports are resolved without pod lookups.
-		resolvedPorts := r.resolveIngressPorts(ctx, policy, rule.Ports)
 		if len(rule.Ports) != 0 && len(resolvedPorts) == 0 {
 			r.logger.Info("Couldn't resolve any ports for ingress rule, skipping",
 				"policy", k8s.NamespacedName(policy), "ports", rule.Ports)
@@ -133,7 +159,6 @@ func (r *defaultEndpointsResolver) computeIngressEndpoints(ctx context.Context, 
 			}
 		}
 	}
-	r.logger.V(1).Info("Resolved ingress rules", "policy", k8s.NamespacedName(policy), "addresses", ingressEndpoints)
 	return ingressEndpoints, nil
 }
 
@@ -352,6 +377,37 @@ func (r *defaultEndpointsResolver) getIngressRulesPorts(ctx context.Context, pol
 	return dedupedPorts
 }
 
+// portKey identifies one resolved port entry. Shared by dedupPorts and portSetKey so the two
+// notions of "the same port" cannot drift.
+func portKey(port policyinfo.Port) string {
+	prot, p, ep := "", "", ""
+	if port.Protocol != nil {
+		prot = string(*port.Protocol)
+	}
+	if port.Port != nil {
+		p = strconv.FormatInt(int64(*port.Port), 10)
+	}
+	if port.EndPort != nil {
+		ep = strconv.FormatInt(int64(*port.EndPort), 10)
+	}
+	return fmt.Sprintf("%s@%s@%s", prot, p, ep)
+}
+
+// portSetKey is an order-independent identity for a port set. A content hash, not an ordinal, so
+// adding a workload to a policy does not renumber the groups that did not change.
+func portSetKey(ports []policyinfo.Port) string {
+	if len(ports) == 0 {
+		return "none" // resolved nothing, so the rule allows this pod nothing
+	}
+	keys := make([]string, 0, len(ports))
+	for _, p := range ports {
+		keys = append(keys, portKey(p))
+	}
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, ",")))
+	return hex.EncodeToString(sum[:])[:10]
+}
+
 func (r *defaultEndpointsResolver) getPortList(pod corev1.Pod, ports []networking.NetworkPolicyPort) []policyinfo.Port {
 	var portList []policyinfo.Port
 	for _, port := range ports {
@@ -531,19 +587,18 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 			if npPort.Port != nil {
 				portVal, err := r.getMatchingServicePort(svc, npPort.Port, npProto, getAllPods)
 				if err != nil {
-					r.logger.Info("Unable to lookup service port", "err", err)
+					r.logger.V(1).Info("Unable to lookup service port", "err", err)
 					continue
 				}
-				// When the NP specifies a numeric port, check if the matched service port
-				// uses a named targetPort that could resolve to a different container port
-				// on some backing pods, bypassing the policy's port restriction via DNAT.
-				if npPort.Port.Type == intstr.Int {
-					if r.hasTargetPortBypass(svc, portVal, npProto, npPorts, getAllPods) {
-						r.logger.Info("Skipping service ClusterIP port (named targetPort may bypass policy port restriction)",
-							"serviceName", svc.Name, "serviceNamespace", svc.Namespace,
-							"servicePort", portVal)
-						continue
-					}
+				// Check whether traffic allowed to ClusterIP:portVal can be DNAT'd by
+				// kube-proxy to a container port the policy does not allow on some backing
+				// pod. Runs for numeric and named policy ports, since either the service's
+				// targetPort or the policy's own named port can resolve differently per pod.
+				if r.hasTargetPortBypass(svc, portVal, npProto, npPorts, getAllPods) {
+					r.logger.Info("Skipping service ClusterIP port (DNAT may reach a container port the policy does not allow)",
+						"serviceName", svc.Name, "serviceNamespace", svc.Namespace,
+						"servicePort", portVal)
+					continue
 				}
 				portPtr = &portVal
 			}
@@ -573,27 +628,40 @@ func (r *defaultEndpointsResolver) getMatchingServiceClusterIPs(ctx context.Cont
 	return networkPeers
 }
 
-// hasTargetPortBypass checks if a specific matched service port's named targetPort resolves
-// to a container port not allowed by the policy on any backing pod. This prevents a bypass
-// where traffic to ClusterIP:X gets DNAT'd by kube-proxy to a pod container port that the
-// NetworkPolicy did not intend to allow.
+// hasTargetPortBypass reports whether traffic allowed to ClusterIP:matchedListenPort can be
+// DNAT'd by kube-proxy to a container port that the NetworkPolicy does not allow on some
+// backing pod.
+//
+// Two things can diverge across backends. A named targetPort on the service resolves per pod,
+// so the destination container port differs. A named port in the policy also resolves per pod,
+// so the allowed set differs. Either one is enough for the destination port and the allowed
+// set to disagree on at least one backend, so both are resolved per pod here.
+//
+// A numeric targetPort combined with numeric policy ports cannot diverge, because every
+// backend receives the same port and the allowed set is pod independent. That case returns
+// early so the common port remapping setup, service port 80 to targetPort 8080, keeps working.
 func (r *defaultEndpointsResolver) hasTargetPortBypass(svc *corev1.Service, matchedListenPort int32,
 	protocol corev1.Protocol, policyPorts []networking.NetworkPolicyPort,
 	getAllPods func() ([]corev1.Pod, error)) bool {
-	// Find the named targetPort for the matched service port
-	var targetPortName string
+	// Find the targetPort backing the matched service port.
+	var targetPort intstr.IntOrString
+	foundServicePort := false
 	for _, sp := range svc.Spec.Ports {
 		spProto := sp.Protocol
 		if spProto == "" {
 			spProto = corev1.ProtocolTCP
 		}
-		if sp.Port == matchedListenPort && spProto == protocol && sp.TargetPort.Type == intstr.String {
-			targetPortName = sp.TargetPort.StrVal
+		if sp.Port == matchedListenPort && spProto == protocol {
+			targetPort = sp.TargetPort
+			foundServicePort = true
 			break
 		}
 	}
-	if targetPortName == "" {
-		return false // numeric targetPort, no bypass risk
+	if !foundServicePort {
+		return false
+	}
+	if targetPort.Type == intstr.Int && !hasNamedPolicyPort(policyPorts, protocol) {
+		return false
 	}
 
 	allPods, err := getAllPods()
@@ -608,32 +676,50 @@ func (r *defaultEndpointsResolver) hasTargetPortBypass(svc *corev1.Service, matc
 		if !svcSelector.Matches(labels.Set(pod.Labels)) {
 			continue
 		}
-		// Resolve the named port using the first matching container port, matching
-		// Kubernetes EndpointSlice controller behavior for svc resolution.
-		cp, containerName, found := firstNamedPort(pod, targetPortName, protocol)
-		if !found {
+		destPort, containerName, exposed := resolveTargetPortOnPod(pod, targetPort, matchedListenPort, protocol)
+		if !exposed {
+			// The pod does not expose this targetPort, so it is not an endpoint for this
+			// service port and cannot be reached through it.
 			continue
 		}
-		if !isNumericPortAllowed(cp.ContainerPort, protocol, policyPorts) {
-			r.logger.Info("Named port resolves to disallowed container port",
+		if !isPortAllowedOnPod(destPort, protocol, policyPorts, pod) {
+			r.logger.Info("Service port DNATs to a container port the policy does not allow",
 				"service", k8s.NamespacedName(svc),
 				"pod", k8s.NamespacedName(pod),
 				"container", containerName,
-				"portName", cp.Name,
-				"containerPort", cp.ContainerPort, "protocol", protocol)
+				"servicePort", matchedListenPort,
+				"containerPort", destPort, "protocol", protocol)
 			return true
 		}
 	}
 	return false
 }
 
-// isNumericPortAllowed checks whether a given numeric port+protocol is allowed by the policy
-// ports list. A nil-port entry (protocol only, no port number) means "allow all ports" for
-// that protocol. Numeric entries are checked directly, including port ranges via EndPort.
-// Named port entries (e.g., port: "http") are skipped because they cannot be compared to a
-// numeric port without pod context to resolve the name. This is safe because the caller
-// only invokes the bypass check for numeric NP ports; named NP ports bypass it entirely.
-func isNumericPortAllowed(port int32, protocol corev1.Protocol, policyPorts []networking.NetworkPolicyPort) bool {
+// resolveTargetPortOnPod returns the container port that a service targetPort resolves to on
+// the given pod. A named targetPort is looked up in the pod's container ports. An unset
+// targetPort defaults to the service listen port, matching Kubernetes.
+func resolveTargetPortOnPod(pod *corev1.Pod, targetPort intstr.IntOrString, listenPort int32,
+	protocol corev1.Protocol) (int32, string, bool) {
+	if targetPort.Type == intstr.String {
+		cp, containerName, found := firstNamedPort(pod, targetPort.StrVal, protocol)
+		if !found {
+			return 0, "", false
+		}
+		return cp.ContainerPort, containerName, true
+	}
+	if targetPort.IntVal != 0 {
+		return targetPort.IntVal, "", true
+	}
+	return listenPort, "", true
+}
+
+// isPortAllowedOnPod checks whether a given numeric port+protocol is allowed by the policy
+// ports list for one specific pod. A nil-port entry (protocol only, no port number) means
+// "allow all ports" for that protocol. Numeric entries are checked directly, including port
+// ranges via EndPort. A named entry is resolved against this pod's container ports, which is
+// what makes the result per backend rather than per policy.
+func isPortAllowedOnPod(port int32, protocol corev1.Protocol,
+	policyPorts []networking.NetworkPolicyPort, pod *corev1.Pod) bool {
 	for _, pp := range policyPorts {
 		ppProto := corev1.ProtocolTCP
 		if pp.Protocol != nil {
@@ -646,7 +732,10 @@ func isNumericPortAllowed(port int32, protocol corev1.Protocol, policyPorts []ne
 		if pp.Port == nil {
 			return true
 		}
-		if pp.Port.Type != intstr.Int {
+		if pp.Port.Type == intstr.String {
+			if cp, _, found := firstNamedPort(pod, pp.Port.StrVal, protocol); found && cp.ContainerPort == port {
+				return true
+			}
 			continue
 		}
 		startPort := pp.Port.IntVal
@@ -655,6 +744,20 @@ func isNumericPortAllowed(port int32, protocol corev1.Protocol, policyPorts []ne
 			endPort = *pp.EndPort
 		}
 		if port >= startPort && port <= endPort {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNamedPolicyPort reports whether any policy port entry for this protocol names its port.
+func hasNamedPolicyPort(policyPorts []networking.NetworkPolicyPort, protocol corev1.Protocol) bool {
+	for _, pp := range policyPorts {
+		ppProto := corev1.ProtocolTCP
+		if pp.Protocol != nil {
+			ppProto = *pp.Protocol
+		}
+		if ppProto == protocol && pp.Port != nil && pp.Port.Type == intstr.String {
 			return true
 		}
 	}
@@ -689,7 +792,7 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(svc *corev1.Service, n
 	if portVal, err := k8s.LookupServiceListenPort(svc, *npPort, npProtocol); err == nil {
 		return portVal, nil
 	} else {
-		r.logger.Info("Unable to lookup service port", "err", err)
+		r.logger.V(1).Info("Unable to lookup service port", "err", err)
 	}
 
 	allPods, err := getAllPods()
@@ -716,18 +819,7 @@ func (r *defaultEndpointsResolver) getMatchingServicePort(svc *corev1.Service, n
 func dedupPorts(policyPorts []policyinfo.Port) []policyinfo.Port {
 	ports := make(map[string]policyinfo.Port)
 	for _, port := range policyPorts {
-		prot, p, ep := "", "", ""
-		if port.Protocol != nil {
-			prot = string(*port.Protocol)
-		}
-		if port.Port != nil {
-			p = strconv.FormatInt(int64(*port.Port), 10)
-		}
-		if port.EndPort != nil {
-			ep = strconv.FormatInt(int64(*port.EndPort), 10)
-		}
-
-		ports[fmt.Sprintf("%s@%s@%s", prot, p, ep)] = port
+		ports[portKey(port)] = port
 	}
 	if len(ports) > 0 {
 		return maps.Values(ports)

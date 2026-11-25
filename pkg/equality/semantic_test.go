@@ -344,9 +344,21 @@ func TestEqualPolicyEndpointSpec_CoversAllFields(t *testing.T) {
 		"PodSelectorEndpoints",
 		"Ingress",
 		"Egress",
+		"TargetGroup",
 	}
 	assert.ElementsMatch(t, expected, structFieldNames(policyinfo.PolicyEndpointSpec{}),
 		"PolicyEndpointSpec fields changed — update EqualPolicyEndpointSpec in semantic.go")
+}
+
+func TestEqualPolicyEndpointSpec_TargetGroup(t *testing.T) {
+	a := policyinfo.PolicyEndpointSpec{TargetGroup: "abc1234567"}
+	b := policyinfo.PolicyEndpointSpec{TargetGroup: "def1234567"}
+
+	// Regrouping can change only this field, so if it did not count the object would never be updated.
+	assert.False(t, EqualPolicyEndpointSpec(a, b))
+	assert.True(t, EqualPolicyEndpointSpec(a, a))
+	// Ungrouped differs from grouped, so an upgrade restamps existing objects.
+	assert.False(t, EqualPolicyEndpointSpec(policyinfo.PolicyEndpointSpec{}, a))
 }
 
 func TestEqualClusterPolicyEndpointSpec_CoversAllFields(t *testing.T) {

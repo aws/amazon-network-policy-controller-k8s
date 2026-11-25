@@ -41,11 +41,9 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 	r.logger.V(1).Info("Policies referred on the same namespace", "pod", k8s.NamespacedName(pod),
 		"policies", referredPolicies)
 
-	for _, ref := range r.policyTracker.GetPoliciesWithNamespaceReferences().UnsortedList() {
-		r.logger.V(1).Info("Policy containing namespace selectors", "ref", ref)
-		if processedPolicies.Has(ref) {
-			continue
-		}
+	refs := r.policiesSelectingPodByNamespace(ctx, pod, podOld, r.policyTracker.GetPoliciesWithNamespaceReferences(),
+		processedPolicies, r.policyTracker.GetPolicyNamespaceSelectorPeers)
+	for _, ref := range refs {
 		policy := &networking.NetworkPolicy{}
 		if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
@@ -54,20 +52,59 @@ func (r *defaultPolicyReferenceResolver) getReferredPoliciesForPod(ctx context.C
 			r.logger.Info("Policy not found", "reference", ref)
 			continue
 		}
-
-		if r.isPodReferredOnIngressEgress(ctx, pod, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-			continue
-		}
-		if podOld != nil && r.isPodReferredOnIngressEgress(ctx, podOld, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-		}
+		referredPolicies = append(referredPolicies, *policy)
 	}
 
 	r.logger.V(1).Info("All referred policies", "pod", k8s.NamespacedName(pod), "policies", referredPolicies)
 	return referredPolicies, nil
+}
+
+// policiesSelectingPodByNamespace returns the policies in refs, other than those in skip, that have a
+// namespaceSelector peer selecting pod or podOld. It runs on every pod event, so it matches the peers parsed by the
+// policy tracker and reads only the pod's namespace, once. A policy that peersOf no longer returns was removed, or
+// lost its namespace references, after refs was read, and is skipped. A pod event that races a policy update may see
+// the previous peers; the update has already queued that policy, and its reconcile resolves the pod from the cache.
+func (r *defaultPolicyReferenceResolver) policiesSelectingPodByNamespace(ctx context.Context, pod, podOld *corev1.Pod,
+	refs, skip sets.Set[types.NamespacedName],
+	peersOf func(types.NamespacedName) ([]NamespaceSelectorPeer, bool)) []types.NamespacedName {
+	var (
+		matched  []types.NamespacedName
+		nsLabels labels.Set
+		nsLoaded bool
+	)
+	for ref := range refs {
+		if skip.Has(ref) {
+			continue
+		}
+		peers, ok := peersOf(ref)
+		if !ok || len(peers) == 0 {
+			continue
+		}
+		if !nsLoaded {
+			ns := &corev1.Namespace{}
+			nsKey := types.NamespacedName{Name: pod.Namespace}
+			if err := r.k8sClient.Get(ctx, nsKey, ns, client.UnsafeDisableDeepCopy); err != nil {
+				// As before: a namespace that cannot be read matches no namespaceSelector.
+				r.logger.Info("Unable to get namespace", "ns", pod.Namespace, "err", err)
+				return nil
+			}
+			nsLabels, nsLoaded = labels.Set(ns.Labels), true
+		}
+		if peersSelectPod(peers, nsLabels, pod, podOld) {
+			matched = append(matched, ref)
+		}
+	}
+	return matched
+}
+
+// peersSelectPod reports whether any of the peers selects the pod, or the pod before the update when podOld is set.
+func peersSelectPod(peers []NamespaceSelectorPeer, nsLabels labels.Set, pod, podOld *corev1.Pod) bool {
+	for _, peer := range peers {
+		if peer.Matches(nsLabels, pod.Labels) || (podOld != nil && peer.Matches(nsLabels, podOld.Labels)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *defaultPolicyReferenceResolver) isPodMatchesPolicySelector(pod *corev1.Pod, podOld *corev1.Pod, policy *networking.NetworkPolicy) bool {
@@ -173,11 +210,10 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 
 	// Second loop: Process cross-namespace ANP policies
 	// Check policies from other namespaces that have namespaceSelector rules
-	for _, ref := range r.policyTracker.GetApplicationNetworkPoliciesWithNamespaceReferences().UnsortedList() {
-		r.logger.V(1).Info("ANP Policy containing namespace selectors", "ref", ref)
-		if processedPolicies.Has(ref) {
-			continue
-		}
+	refs := r.policiesSelectingPodByNamespace(ctx, pod, podOld,
+		r.policyTracker.GetApplicationNetworkPoliciesWithNamespaceReferences(), processedPolicies,
+		r.policyTracker.GetApplicationNetworkPolicyNamespaceSelectorPeers)
+	for _, ref := range refs {
 		policy := &policyinfo.ApplicationNetworkPolicy{}
 		if err := r.k8sClient.Get(ctx, ref, policy, client.UnsafeDisableDeepCopy); err != nil {
 			if client.IgnoreNotFound(err) != nil {
@@ -186,16 +222,7 @@ func (r *defaultPolicyReferenceResolver) getReferredApplicationNetworkPoliciesFo
 			r.logger.Info("ANP Policy not found", "reference", ref)
 			continue
 		}
-
-		if r.isPodReferredOnANPIngressEgress(ctx, pod, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-			continue
-		}
-		if podOld != nil && r.isPodReferredOnANPIngressEgress(ctx, podOld, policy) {
-			referredPolicies = append(referredPolicies, *policy)
-			processedPolicies.Insert(k8s.NamespacedName(policy))
-		}
+		referredPolicies = append(referredPolicies, *policy)
 	}
 
 	r.logger.V(1).Info("All referred ANP policies", "pod", k8s.NamespacedName(pod), "policies", referredPolicies)
