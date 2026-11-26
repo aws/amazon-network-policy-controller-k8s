@@ -38,6 +38,11 @@ func (m *MockEndpointsResolver) ResolveGroups(ctx context.Context, policy *netwo
 	return []IngressGroup{{Ingress: ingress, PodEndpoints: podEndpoints}}, nil, egress, nil
 }
 
+// Tests that stub Resolve use numeric ports, so nothing resolves per pod.
+func (m *MockEndpointsResolver) ResolvePodPorts(_ corev1.Pod, _ []networking.NetworkPolicyPort) []policyinfo.Port {
+	return nil
+}
+
 func TestClusterNetworkPolicyEndpointsResolver_mergeClusterEndpointInfo(t *testing.T) {
 	resolver := &clusterNetworkPolicyEndpointsResolver{
 		logger: logr.Discard(),

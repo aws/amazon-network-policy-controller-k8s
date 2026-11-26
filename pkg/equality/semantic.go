@@ -60,6 +60,11 @@ func EqualClusterPolicyEndpointSpec(a, b policyinfo.ClusterPolicyEndpointSpec) b
 	if !equality.Semantic.DeepEqual(a.Subject, b.Subject) {
 		return false
 	}
+	// Regrouping can leave the rules and the pods identical and change only this, so comparing
+	// it is what makes the ClusterPolicyEndpoint get updated.
+	if a.TargetGroup != b.TargetGroup {
+		return false
+	}
 	if !equalClusterEndpointInfoSlice(a.Ingress, b.Ingress) {
 		return false
 	}

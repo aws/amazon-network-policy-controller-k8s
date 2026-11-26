@@ -16,8 +16,18 @@ import (
 )
 
 type ClusterNetworkPolicyEndpointsResolver interface {
-	// ResolveClusterNetworkPolicy returns the resolved endpoints for the given ClusterNetworkPolicy
+	// ResolveClusterNetworkPolicy returns the resolved endpoints for the given
+	// ClusterNetworkPolicy as one flat ingress list. Its named ingress ports are merged across the
+	// subject pods, so a caller that applies the result to every subject pod allows a pod ports it
+	// does not serve; ResolveClusterNetworkPolicyGroups is what the manager uses.
 	ResolveClusterNetworkPolicy(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) ([]policyinfo.ClusterEndpointInfo, []policyinfo.ClusterEndpointInfo, []policyinfo.PodEndpoint, error)
+
+	// ResolveClusterNetworkPolicyGroups is ResolveClusterNetworkPolicy with the ingress rules and
+	// subject pods partitioned by the ports each pod resolved. The second return holds the ingress
+	// rules that do not vary by pod, and the third the egress rules, both of which apply to every
+	// subject pod.
+	ResolveClusterNetworkPolicyGroups(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) ([]ClusterIngressGroup,
+		[]policyinfo.ClusterEndpointInfo, []policyinfo.ClusterEndpointInfo, error)
 }
 
 // NewClusterNetworkPolicyEndpointsResolver constructs a new clusterNetworkPolicyEndpointsResolver
@@ -481,38 +491,45 @@ func (r *clusterNetworkPolicyEndpointsResolver) resolveCNPIngressRules(ctx conte
 	return r.mergeClusterEndpointInfo(allIngressRules), nil
 }
 
-// getSubjectNamespace returns a single namespace from those matching the
-// CNP subject selector, used by callers for named-port resolution against
-// destination pods. The namespace list is sorted before picking [0] so the
-// choice is deterministic across reconciles — k8sClient.List() ordering is
-// not guaranteed stable, and an unstable choice would flip resolved named
-// ports between reconciles when the subject spans multiple namespaces.
+// getSubjectNamespace returns a single namespace from those matching the CNP
+// subject selector. The list is sorted before picking [0], so the choice is
+// deterministic across reconciles — k8sClient.List() ordering is not
+// guaranteed stable.
 //
-// Note: this is a best-effort approximation. When the subject spans multiple
-// namespaces with named ports declared on different containerPort values,
-// only the chosen namespace's pods contribute to resolution. This is a limitation of the current CPE schema
+// This is enough for the egress and the ungrouped ingress paths, where the
+// namespace only keeps the temp NetworkPolicy well formed. Grouped ingress
+// resolves named ports against the subject pods of every subject namespace
+// instead, via getSubjectNamespaces.
 func (r *clusterNetworkPolicyEndpointsResolver) getSubjectNamespace(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) (string, error) {
-	if cnp.Spec.Subject.Pods != nil {
-		namespaces, err := r.resolveNamespacesBySelector(ctx, cnp.Spec.Subject.Pods.NamespaceSelector)
-		if err != nil {
-			return "", fmt.Errorf("resolving subject namespaces from Pods.NamespaceSelector: %w", err)
-		}
-		if len(namespaces) > 0 {
-			sort.Strings(namespaces)
-			return namespaces[0], nil
-		}
-	} else if cnp.Spec.Subject.Namespaces != nil {
-		namespaces, err := r.resolveNamespacesBySelector(ctx, *cnp.Spec.Subject.Namespaces)
-		if err != nil {
-			return "", fmt.Errorf("resolving subject namespaces from Subject.Namespaces: %w", err)
-		}
-		if len(namespaces) > 0 {
-			sort.Strings(namespaces)
-			return namespaces[0], nil
-		}
+	namespaces, err := r.getSubjectNamespaces(ctx, cnp)
+	if err != nil {
+		return "", err
+	}
+	if len(namespaces) > 0 {
+		return namespaces[0], nil
 	}
 	// No namespace matched the subject selector. Returning empty namespace
 	// lets callers decide whether they can safely proceed without a concrete
 	// subject namespace.
 	return "", nil
+}
+
+// getSubjectNamespaces returns every namespace matching the CNP subject selector, sorted so the
+// order does not change between reconciles: k8sClient.List() ordering is not guaranteed stable.
+func (r *clusterNetworkPolicyEndpointsResolver) getSubjectNamespaces(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) ([]string, error) {
+	var namespaces []string
+	var err error
+	if cnp.Spec.Subject.Pods != nil {
+		namespaces, err = r.resolveNamespacesBySelector(ctx, cnp.Spec.Subject.Pods.NamespaceSelector)
+		if err != nil {
+			return nil, fmt.Errorf("resolving subject namespaces from Pods.NamespaceSelector: %w", err)
+		}
+	} else if cnp.Spec.Subject.Namespaces != nil {
+		namespaces, err = r.resolveNamespacesBySelector(ctx, *cnp.Spec.Subject.Namespaces)
+		if err != nil {
+			return nil, fmt.Errorf("resolving subject namespaces from Subject.Namespaces: %w", err)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }

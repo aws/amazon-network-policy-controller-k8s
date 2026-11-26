@@ -118,7 +118,8 @@ test: manifests generate fmt vet envtest prepare-embed ## Run tests.
 .PHONY: prepare-embed
 prepare-embed: ## Prepare files for go:embed.
 	cat config/crd/bases/*.yaml > pkg/crd/crds.yaml
-	sed -i.bak '1834s/v0\.17\.0/v0.11.3/' pkg/crd/crds.yaml && rm -f pkg/crd/crds.yaml.bak
+	line=$$(grep -n '^  name: policyendpoints.networking.k8s.aws$$' pkg/crd/crds.yaml | cut -d: -f1); \
+	sed -i.bak "$$((line-1))s/v0\.17\.0/v0.11.3/" pkg/crd/crds.yaml && rm -f pkg/crd/crds.yaml.bak
 
 
 .PHONY: build

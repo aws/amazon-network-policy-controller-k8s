@@ -819,7 +819,7 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyinfo.ClusterNetworkPolicy) error {
 	computeStart := time.Now()
 
-	ingressRules, egressRules, podSelectorEndpoints, err := m.cnpEndpointsResolver.ResolveClusterNetworkPolicy(ctx, cnp)
+	ingressGroups, sharedIngressRules, egressRules, err := m.cnpEndpointsResolver.ResolveClusterNetworkPolicyGroups(ctx, cnp)
 	if err != nil {
 		return err
 	}
@@ -833,7 +833,7 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 
 	existingClusterPolicyEndpoints := clusterPolicyEndpointList.Items
 
-	createList, updateList, deleteList, err := m.computeClusterPolicyEndpoints(cnp, existingClusterPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
+	createList, updateList, deleteList, err := m.computeClusterPolicyEndpoints(cnp, existingClusterPolicyEndpoints, ingressGroups, sharedIngressRules, egressRules)
 	if err != nil {
 		return err
 	}
@@ -896,7 +896,11 @@ func (m *policyEndpointsManager) CleanupCNP(ctx context.Context, cnp *policyinfo
 	return nil
 }
 
-func (m *policyEndpointsManager) computeClusterPolicyEndpoints(cnp *policyinfo.ClusterNetworkPolicy, existingCPEs []policyinfo.ClusterPolicyEndpoint, ingressRules []policyinfo.ClusterEndpointInfo, egressRules []policyinfo.ClusterEndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.ClusterPolicyEndpoint, []policyinfo.ClusterPolicyEndpoint, []policyinfo.ClusterPolicyEndpoint, error) {
+func (m *policyEndpointsManager) computeClusterPolicyEndpoints(cnp *policyinfo.ClusterNetworkPolicy,
+	existingCPEs []policyinfo.ClusterPolicyEndpoint, ingressGroups []resolvers.ClusterIngressGroup,
+	sharedIngressRules, egressRules []policyinfo.ClusterEndpointInfo) ([]policyinfo.ClusterPolicyEndpoint,
+	[]policyinfo.ClusterPolicyEndpoint, []policyinfo.ClusterPolicyEndpoint, error) {
+
 	// Create metadata for ClusterNetworkPolicy
 	cnpMetadata := ClusterPolicyMetadata{
 		Name:     cnp.Name,
@@ -906,33 +910,48 @@ func (m *policyEndpointsManager) computeClusterPolicyEndpoints(cnp *policyinfo.C
 		Subject:  cnp.Spec.Subject,
 	}
 
-	// Process existing CPEs and convert rules to maps for chunking
-	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedCPEs, potentialDeletes := m.processExistingClusterPolicyEndpoints(
-		existingCPEs, ingressRules, egressRules, podSelectorEndpoints, cnpMetadata,
-	)
+	var createCPEs, updateCPEs, deleteCPEs []policyinfo.ClusterPolicyEndpoint
 
-	doNotDelete := sets.Set[types.NamespacedName]{}
-	var createCPEs []policyinfo.ClusterPolicyEndpoint
-	var updateCPEs []policyinfo.ClusterPolicyEndpoint
-	var deleteCPEs []policyinfo.ClusterPolicyEndpoint
-
-	// Use chunking logic (same pattern as NP/ANP)
-	createCPEs, doNotDeleteIngress := m.packingClusterIngressRules(cnpMetadata, ingressEndpointsMap, createCPEs, modifiedCPEs, potentialDeletes)
-	createCPEs, doNotDeleteEgress := m.packingClusterEgressRules(cnpMetadata, egressEndpointsMap, createCPEs, modifiedCPEs, potentialDeletes)
-	createCPEs, doNotDeletePs := m.packingClusterPodSelectorEndpoints(cnpMetadata, podSelectorEndpointSet.UnsortedList(), createCPEs, modifiedCPEs, potentialDeletes)
-
-	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
-
-	for _, cpe := range potentialDeletes {
-		if doNotDelete.Has(types.NamespacedName{Name: cpe.Name}) {
-			updateCPEs = append(updateCPEs, cpe)
-		} else {
-			deleteCPEs = append(deleteCPEs, cpe)
+	if len(ingressGroups) > 1 {
+		// The subject pods resolved different port sets, so each group gets its own
+		// ClusterPolicyEndpoints and the packing runs over that group's existing ones only.
+		// Otherwise one group's rules would be packed into another group's object.
+		byGroup := map[string][]policyinfo.ClusterPolicyEndpoint{}
+		for _, cpe := range existingCPEs {
+			byGroup[cpe.Spec.TargetGroup] = append(byGroup[cpe.Spec.TargetGroup], cpe)
 		}
+		seen := sets.New[string]()
+		for _, g := range ingressGroups {
+			seen.Insert(g.Key)
+			c, u, d := m.packClusterPolicyEndpointGroup(cnpMetadata, g.Key, byGroup[g.Key], g.Ingress, nil, g.PodEndpoints)
+			createCPEs = append(createCPEs, c...)
+			updateCPEs = append(updateCPEs, u...)
+			deleteCPEs = append(deleteCPEs, d...)
+		}
+		// Egress and the ingress rules that named no port do not vary by group, so they stay
+		// ungrouped and apply to every subject pod: one copy serves every group rather than each
+		// group carrying its own. This pass also drains any pre-grouping ClusterPolicyEndpoint of
+		// the pods it used to carry.
+		c, u, d := m.packClusterPolicyEndpointGroup(cnpMetadata, "", byGroup[""], sharedIngressRules, egressRules, nil)
+		createCPEs = append(createCPEs, c...)
+		updateCPEs = append(updateCPEs, u...)
+		deleteCPEs = append(deleteCPEs, d...)
+		// Objects of a group that no longer exists have nothing left to carry.
+		for group, cpes := range byGroup {
+			if group == "" || seen.Has(group) {
+				continue
+			}
+			deleteCPEs = append(deleteCPEs, cpes...)
+		}
+	} else {
+		var ingressRules []policyinfo.ClusterEndpointInfo
+		var podSelectorEndpoints []policyinfo.PodEndpoint
+		if len(ingressGroups) == 1 {
+			ingressRules, podSelectorEndpoints = ingressGroups[0].Ingress, ingressGroups[0].PodEndpoints
+		}
+		createCPEs, updateCPEs, deleteCPEs = m.packClusterPolicyEndpointGroup(
+			cnpMetadata, "", existingCPEs, ingressRules, egressRules, podSelectorEndpoints)
 	}
-	updateCPEs = append(updateCPEs, modifiedCPEs...)
 
 	// Ensure at least one CPE exists
 	if len(createCPEs) == 0 && len(updateCPEs) == 0 {
@@ -947,6 +966,48 @@ func (m *policyEndpointsManager) computeClusterPolicyEndpoints(cnp *policyinfo.C
 	}
 
 	return m.processClusterPolicyEndpoints(createCPEs), m.processClusterPolicyEndpoints(updateCPEs), deleteCPEs, nil
+}
+
+// packClusterPolicyEndpointGroup runs the purge-then-chunk flow over one group's existing objects
+// and stamps the group on everything it creates or keeps, so an object never carries another
+// group's rules. targetGroup is empty for an ungrouped policy, which is the common case.
+func (m *policyEndpointsManager) packClusterPolicyEndpointGroup(cnpMetadata ClusterPolicyMetadata,
+	targetGroup string, existing []policyinfo.ClusterPolicyEndpoint,
+	ingressRules, egressRules []policyinfo.ClusterEndpointInfo,
+	podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.ClusterPolicyEndpoint,
+	[]policyinfo.ClusterPolicyEndpoint, []policyinfo.ClusterPolicyEndpoint) {
+
+	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedCPEs, potentialDeletes := m.processExistingClusterPolicyEndpoints(
+		existing, ingressRules, egressRules, podSelectorEndpoints, cnpMetadata,
+	)
+
+	var createCPEs []policyinfo.ClusterPolicyEndpoint
+	createCPEs, doNotDeleteIngress := m.packingClusterIngressRules(cnpMetadata, ingressEndpointsMap, createCPEs, modifiedCPEs, potentialDeletes)
+	createCPEs, doNotDeleteEgress := m.packingClusterEgressRules(cnpMetadata, egressEndpointsMap, createCPEs, modifiedCPEs, potentialDeletes)
+	createCPEs, doNotDeletePs := m.packingClusterPodSelectorEndpoints(cnpMetadata, podSelectorEndpointSet.UnsortedList(), createCPEs, modifiedCPEs, potentialDeletes)
+
+	doNotDelete := sets.Set[types.NamespacedName]{}
+	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
+	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
+	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
+
+	var updateCPEs, deleteCPEs []policyinfo.ClusterPolicyEndpoint
+	for _, cpe := range potentialDeletes {
+		if doNotDelete.Has(types.NamespacedName{Name: cpe.Name}) {
+			updateCPEs = append(updateCPEs, cpe)
+		} else {
+			deleteCPEs = append(deleteCPEs, cpe)
+		}
+	}
+	updateCPEs = append(updateCPEs, modifiedCPEs...)
+
+	for i := range createCPEs {
+		createCPEs[i].Spec.TargetGroup = targetGroup
+	}
+	for i := range updateCPEs {
+		updateCPEs[i].Spec.TargetGroup = targetGroup
+	}
+	return createCPEs, updateCPEs, deleteCPEs
 }
 
 func (m *policyEndpointsManager) processClusterPolicyEndpoints(cpes []policyinfo.ClusterPolicyEndpoint) []policyinfo.ClusterPolicyEndpoint {

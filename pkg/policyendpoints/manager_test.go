@@ -1361,6 +1361,17 @@ func (m *mockCNPEndpointsResolver) ResolveClusterNetworkPolicy(ctx context.Conte
 	return m.ingressRules, m.egressRules, m.podEndpoints, nil
 }
 
+// One ungrouped group, which is what a policy whose subject pods agree resolves to.
+func (m *mockCNPEndpointsResolver) ResolveClusterNetworkPolicyGroups(ctx context.Context,
+	cnp *policyinfo.ClusterNetworkPolicy) ([]resolvers.ClusterIngressGroup, []policyinfo.ClusterEndpointInfo,
+	[]policyinfo.ClusterEndpointInfo, error) {
+	ingress, egress, podEndpoints, err := m.ResolveClusterNetworkPolicy(ctx, cnp)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return []resolvers.ClusterIngressGroup{{Ingress: ingress, PodEndpoints: podEndpoints}}, nil, egress, nil
+}
+
 func Test_setLastChangeTriggerTime(t *testing.T) {
 	t.Run("sets annotation on PE with nil annotations", func(t *testing.T) {
 		pe := &policyinfo.PolicyEndpoint{}
@@ -1676,4 +1687,56 @@ func Test_policyEndpointsManager_sharedIngressStaysUngrouped(t *testing.T) {
 		"g2": {"2.2.2.2/32"},
 		"":   {"9.9.9.9/32"},
 	}, byGroup, "the shared rule belongs to the ungrouped object alone, not to either group")
+}
+
+// A split ClusterNetworkPolicy keeps each group's rules in that group's object and carries the
+// rules that do not vary by pod once, in the ungrouped object the agent applies to every pod.
+func Test_policyEndpointsManager_computeClusterPolicyEndpoints_perGroup(t *testing.T) {
+	m := &policyEndpointsManager{endpointChunkSize: 100, logger: logr.Discard()}
+	cnp := &policyinfo.ClusterNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "cnp"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{
+			Tier:     policyinfo.AdminTier,
+			Priority: 10,
+		},
+	}
+	ingress := func(cidr string, action policyinfo.ClusterNetworkPolicyRuleAction) []policyinfo.ClusterEndpointInfo {
+		return []policyinfo.ClusterEndpointInfo{{CIDR: policyinfo.NetworkAddress(cidr), Action: action}}
+	}
+	groups := []resolvers.ClusterIngressGroup{
+		{Key: "g1", Ingress: ingress("1.1.1.1/32", policyinfo.ClusterNetworkPolicyRuleActionAccept),
+			PodEndpoints: []policyinfo.PodEndpoint{{Namespace: "ns1", Name: "a"}}},
+		{Key: "g2", Ingress: ingress("2.2.2.2/32", policyinfo.ClusterNetworkPolicyRuleActionAccept),
+			PodEndpoints: []policyinfo.PodEndpoint{{Namespace: "ns2", Name: "b"}}},
+	}
+
+	createList, _, _, err := m.computeClusterPolicyEndpoints(cnp, nil, groups,
+		ingress("9.9.9.9/32", policyinfo.ClusterNetworkPolicyRuleActionDeny),
+		ingress("8.8.8.8/32", policyinfo.ClusterNetworkPolicyRuleActionAccept))
+	assert.NoError(t, err)
+
+	byGroup := map[string][]string{}
+	podsByGroup := map[string][]string{}
+	for _, cpe := range createList {
+		assert.Equal(t, policyinfo.AdminTier, cpe.Spec.Tier)
+		assert.Equal(t, int32(10), cpe.Spec.Priority)
+		for _, in := range cpe.Spec.Ingress {
+			byGroup[cpe.Spec.TargetGroup] = append(byGroup[cpe.Spec.TargetGroup], string(in.Action)+":"+string(in.CIDR))
+		}
+		for _, eg := range cpe.Spec.Egress {
+			byGroup[cpe.Spec.TargetGroup] = append(byGroup[cpe.Spec.TargetGroup], "egress/"+string(eg.CIDR))
+		}
+		for _, pe := range cpe.Spec.PodSelectorEndpoints {
+			podsByGroup[cpe.Spec.TargetGroup] = append(podsByGroup[cpe.Spec.TargetGroup], pe.Namespace+"/"+pe.Name)
+		}
+	}
+	assert.Equal(t, map[string][]string{
+		"g1": {"Accept:1.1.1.1/32"},
+		"g2": {"Accept:2.2.2.2/32"},
+		"":   {"Deny:9.9.9.9/32", "egress/8.8.8.8/32"},
+	}, byGroup, "the shared ingress and the egress belong to the ungrouped object alone")
+	assert.Equal(t, map[string][]string{
+		"g1": {"ns1/a"},
+		"g2": {"ns2/b"},
+	}, podsByGroup, "each group lists only its own pods, and the ungrouped object lists none")
 }
