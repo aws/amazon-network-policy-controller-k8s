@@ -93,6 +93,45 @@ func Test_convertApplicationNetworkPolicyToNetworkPolicy(t *testing.T) {
 	assert.Equal(t, "10.0.0.0/8", np.Spec.Egress[0].To[0].IPBlock.CIDR)
 }
 
+func TestApplicationNetworkPolicyEndpointsResolver_PortsOnlyEgressAllowsAllDestinations(t *testing.T) {
+	protocol := corev1.ProtocolUDP
+	port := intstr.FromInt(53)
+	anp := &policyinfo.ApplicationNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "dns-only", Namespace: "default"},
+		Spec: policyinfo.ApplicationNetworkPolicySpec{
+			PolicyTypes: []networking.PolicyType{networking.PolicyTypeEgress},
+			Egress: []policyinfo.ApplicationNetworkPolicyEgressRule{{
+				Ports: []networking.NetworkPolicyPort{{Protocol: &protocol, Port: &port}},
+			}},
+		},
+	}
+	baseResolver := &mockEndpointsResolver{
+		mockResolve: func(_ context.Context, policy *networking.NetworkPolicy) ([]policyinfo.EndpointInfo, []policyinfo.EndpointInfo, []policyinfo.PodEndpoint, error) {
+			if len(policy.Spec.Egress) == 0 {
+				return nil, nil, nil, nil
+			}
+
+			assert.Len(t, policy.Spec.Egress, 1)
+			assert.Nil(t, policy.Spec.Egress[0].To)
+			assert.Equal(t, anp.Spec.Egress[0].Ports, policy.Spec.Egress[0].Ports)
+			return nil, []policyinfo.EndpointInfo{
+				{CIDR: "0.0.0.0/0", Ports: []policyinfo.Port{{Protocol: &protocol, Port: func() *int32 { value := int32(53); return &value }()}}},
+				{CIDR: "::/0", Ports: []policyinfo.Port{{Protocol: &protocol, Port: func() *int32 { value := int32(53); return &value }()}}},
+			}, nil, nil
+		},
+	}
+	resolver := &applicationNetworkPolicyEndpointsResolver{baseResolver: baseResolver}
+
+	_, egress, _, err := resolver.ResolveApplicationNetworkPolicy(context.Background(), anp)
+
+	assert.NoError(t, err)
+	assert.Len(t, egress, 2)
+	assert.Equal(t, policyinfo.NetworkAddress("0.0.0.0/0"), egress[0].CIDR)
+	assert.Equal(t, policyinfo.NetworkAddress("::/0"), egress[1].CIDR)
+	assert.Equal(t, int32(53), *egress[0].Ports[0].Port)
+	assert.Equal(t, protocol, *egress[0].Ports[0].Protocol)
+}
+
 func Test_applicationNetworkPolicyEndpointsResolver_ResolveApplicationNetworkPolicy(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

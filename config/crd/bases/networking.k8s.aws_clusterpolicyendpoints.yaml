@@ -61,7 +61,7 @@ spec:
                       type: string
                     domainName:
                       description: DomainName is the FQDN for the endpoint (egress-only)
-                      pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                      pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                       type: string
                     ports:
                       description: Ports is the list of ports
@@ -110,7 +110,7 @@ spec:
                       type: string
                     domainName:
                       description: DomainName is the FQDN for the endpoint (egress-only)
-                      pattern: ^(\*\.)?([a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
+                      pattern: ^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([-a-zA-Z0-9_]*[a-zA-Z0-9])?\.?$
                       type: string
                     ports:
                       description: Ports is the list of ports

@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  labels:
+    app: ports-only-egress
+spec:
+  restartPolicy: Never
+  containers:
+  - name: client
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command:
+    - /bin/sh
+    - -c
+    - sleep 3600
+---
+apiVersion: networking.k8s.aws/v1alpha1
+kind: ApplicationNetworkPolicy
+metadata:
+  name: ports-only-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: ports-only-egress
+  policyTypes:
+  - Egress
+  egress:
+  # Kubernetes NetworkPolicy semantics: omitted `to` means all destinations.
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - domainNames:
+      - example.com
+    ports:
+    - protocol: TCP
+      port: 443

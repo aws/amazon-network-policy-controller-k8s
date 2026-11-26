@@ -113,6 +113,10 @@ check-deps: ## List direct dependencies in go.mod that have newer versions avail
 test: manifests generate fmt vet envtest prepare-embed ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
 
+.PHONY: e2e-regression
+e2e-regression: ## Run focused NPC regressions against the cluster in KUBECONFIG.
+	./scripts/run-regression-e2e.sh
+
 ##@ Build
 # sed -i.bak (suffix attached) is the in-place form both GNU and BSD/macOS sed accept.
 .PHONY: prepare-embed
