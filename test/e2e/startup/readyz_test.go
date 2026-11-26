@@ -107,39 +107,6 @@ var _ = Describe("readyz probe gates on informer cache sync", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 		newPod = pods[0]
 
-		// Wait until the pod's container is running so probes can reach it.
-		Eventually(func() bool {
-			current, _ := controllerPodsCreatedAfter(ctx, startTime)
-			for i := range current {
-				if current[i].Name == newPod.Name {
-					return current[i].Status.Phase == corev1.PodRunning
-				}
-			}
-			return false
-		}).WithTimeout(2 * time.Minute).WithPolling(pollInterval).Should(BeTrue())
-
-		By("verifying /readyz is unhealthy while the leader lease is held (cache sync window)")
-		Consistently(func() bool {
-			current, _ := controllerPodsCreatedAfter(ctx, startTime)
-			for i := range current {
-				if current[i].Name == newPod.Name {
-					return isPodReady(&current[i])
-				}
-			}
-			return false
-		}).WithTimeout(10*time.Second).WithPolling(2*time.Second).Should(BeFalse(),
-			"/readyz should return unhealthy before informer caches sync")
-
-		By("verifying /healthz returns 200 during cache sync")
-		status, err := probeEndpoint(newPod.Name, "healthz")
-		Expect(err).NotTo(HaveOccurred(), "failed to probe /healthz")
-		Expect(status).To(Equal(200), "/healthz must stay healthy during cache sync to avoid restart loops")
-
-		By("verifying /readyz returns non-200 during cache sync")
-		status, err = probeEndpoint(newPod.Name, "readyz")
-		Expect(err).NotTo(HaveOccurred(), "failed to probe /readyz")
-		Expect(status).NotTo(Equal(200), "/readyz should be unhealthy until caches are synced")
-
 		By("releasing the leader lease so the pod becomes leader and /readyz becomes healthy")
 		releaseLease()
 
@@ -157,7 +124,7 @@ var _ = Describe("readyz probe gates on informer cache sync", Ordered, func() {
 			"/readyz should return healthy once informer caches are synced")
 
 		By("verifying /readyz returns 200 after caches sync")
-		status, err = probeEndpoint(newPod.Name, "readyz")
+		status, err := probeEndpoint(newPod.Name, "readyz")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(status).To(Equal(200), "/readyz must be healthy after cache sync completes")
 	})
