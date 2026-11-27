@@ -247,7 +247,7 @@ func (m *policyEndpointsManager) newClusterPolicyEndpoint(metadata ClusterPolicy
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         "networking.k8s.aws/v1alpha1",
-					Kind:               "ClusterNetworkPolicy",
+					Kind:               kindClusterNetworkPolicy,
 					Name:               metadata.Name,
 					UID:                metadata.UID,
 					BlockOwnerDeletion: &blockOwnerDeletion,
