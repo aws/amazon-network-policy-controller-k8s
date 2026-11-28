@@ -177,12 +177,12 @@ func Test_policyEndpointsManager_computeClusterPolicyEndpoints_chunking(t *testi
 
 func Test_policyEndpointsManager_packingClusterIngressRules(t *testing.T) {
 	tests := []struct {
-		name                string
-		rulesMap            map[string]policyinfo.ClusterEndpointInfo
-		existingCPEs        []policyinfo.ClusterPolicyEndpoint
-		chunkSize           int
-		expectedCPEs        int
-		expectedDoNotDelete int
+		name            string
+		rulesMap        map[string]policyinfo.ClusterEndpointInfo
+		existingCPEs    []policyinfo.ClusterPolicyEndpoint
+		chunkSize       int
+		expectedCPEs    int
+		expectedWritten int
 	}{
 		{
 			name: "pack rules into new CPEs",
@@ -190,18 +190,18 @@ func Test_policyEndpointsManager_packingClusterIngressRules(t *testing.T) {
 				"rule1": {CIDR: "10.0.0.0/8", Action: "Allow"},
 				"rule2": {CIDR: "192.168.0.0/16", Action: "Allow"},
 			},
-			existingCPEs:        []policyinfo.ClusterPolicyEndpoint{},
-			chunkSize:           200,
-			expectedCPEs:        1,
-			expectedDoNotDelete: 0,
+			existingCPEs:    []policyinfo.ClusterPolicyEndpoint{},
+			chunkSize:       200,
+			expectedCPEs:    1,
+			expectedWritten: 0,
 		},
 		{
-			name:                "pack rules exceeding chunk size",
-			rulesMap:            generateClusterEndpointInfoMap(250),
-			existingCPEs:        []policyinfo.ClusterPolicyEndpoint{},
-			chunkSize:           200,
-			expectedCPEs:        2, // 200 + 50
-			expectedDoNotDelete: 0,
+			name:            "pack rules exceeding chunk size",
+			rulesMap:        generateClusterEndpointInfoMap(250),
+			existingCPEs:    []policyinfo.ClusterPolicyEndpoint{},
+			chunkSize:       200,
+			expectedCPEs:    2, // 200 + 50
+			expectedWritten: 0,
 		},
 		{
 			name: "reuse existing CPE",
@@ -211,9 +211,9 @@ func Test_policyEndpointsManager_packingClusterIngressRules(t *testing.T) {
 			existingCPEs: []policyinfo.ClusterPolicyEndpoint{
 				{ObjectMeta: metav1.ObjectMeta{Name: "existing-cpe"}},
 			},
-			chunkSize:           200,
-			expectedCPEs:        0, // No new CPEs created, existing one is reused
-			expectedDoNotDelete: 1, // Existing CPE is marked as do not delete
+			chunkSize:       200,
+			expectedCPEs:    0, // No new CPEs created, existing one is reused
+			expectedWritten: 1, // Existing CPE is reused, so it is written
 		},
 	}
 
@@ -228,15 +228,13 @@ func Test_policyEndpointsManager_packingClusterIngressRules(t *testing.T) {
 				UID:  "test-uid",
 			}
 
-			createCPEs := []policyinfo.ClusterPolicyEndpoint{}
-			modifiedCPEs := tt.existingCPEs
-			potentialDeletes := []policyinfo.ClusterPolicyEndpoint{}
+			targets := newClusterPolicyEndpointTargets()
+			targets.modified = tt.existingCPEs
 
-			resultCPEs, doNotDelete := m.packingClusterIngressRules(
-				metadata, tt.rulesMap, createCPEs, modifiedCPEs, potentialDeletes)
+			m.packingClusterIngressRules(metadata, tt.rulesMap, targets)
 
-			assert.Equal(t, tt.expectedCPEs, len(resultCPEs))
-			assert.Equal(t, tt.expectedDoNotDelete, doNotDelete.Len())
+			assert.Equal(t, tt.expectedCPEs, len(targets.created))
+			assert.Equal(t, tt.expectedWritten, targets.written.Len())
 		})
 	}
 }
@@ -370,13 +368,14 @@ func Test_policyEndpointsManager_processExistingClusterPolicyEndpoints_preserveM
 		},
 	}
 
-	ingressMap, egressMap, podSet, modifiedCPEs, potentialDeletes := manager.processExistingClusterPolicyEndpoints(
+	ingressMap, egressMap, podSet, targets := manager.processExistingClusterPolicyEndpoints(
 		[]policyinfo.ClusterPolicyEndpoint{existingCPE},
 		newIngressRules,
 		newEgressRules,
 		newPodEndpoints,
 		testMetadata,
 	)
+	modifiedCPEs, potentialDeletes := targets.modified, targets.potentialDeletes
 
 	// Verify results
 	assert.Len(t, modifiedCPEs, 1, "Should have one modified CPE")
@@ -442,13 +441,14 @@ func Test_policyEndpointsManager_processExistingClusterPolicyEndpoints_updateTie
 		{CIDR: "10.0.0.0/8", Action: "Accept"},
 	}
 
-	_, _, _, modifiedCPEs, _ := manager.processExistingClusterPolicyEndpoints(
+	_, _, _, targets := manager.processExistingClusterPolicyEndpoints(
 		[]policyinfo.ClusterPolicyEndpoint{existingCPE},
 		ingressRules,
 		[]policyinfo.ClusterEndpointInfo{},
 		[]policyinfo.PodEndpoint{},
 		newMetadata,
 	)
+	modifiedCPEs := targets.modified
 
 	// Verify that CPE was marked as modified due to tier/priority change
 	assert.Len(t, modifiedCPEs, 1, "Should have one modified CPE")
@@ -501,13 +501,14 @@ func Test_policyEndpointsManager_processExistingClusterPolicyEndpoints_updateSub
 		{CIDR: "10.0.0.0/8", Action: "Accept"},
 	}
 
-	_, _, _, modifiedCPEs, _ := manager.processExistingClusterPolicyEndpoints(
+	_, _, _, targets := manager.processExistingClusterPolicyEndpoints(
 		[]policyinfo.ClusterPolicyEndpoint{existingCPE},
 		ingressRules,
 		[]policyinfo.ClusterEndpointInfo{},
 		[]policyinfo.PodEndpoint{},
 		newMetadata,
 	)
+	modifiedCPEs := targets.modified
 
 	// Verify that CPE was marked as modified due to subject change
 	assert.Len(t, modifiedCPEs, 1, "Should have one modified CPE")

@@ -34,8 +34,7 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 	map[string]policyinfo.ClusterEndpointInfo,
 	map[string]policyinfo.ClusterEndpointInfo,
 	sets.Set[policyinfo.PodEndpoint],
-	[]policyinfo.ClusterPolicyEndpoint,
-	[]policyinfo.ClusterPolicyEndpoint) {
+	*packTargets[policyinfo.ClusterPolicyEndpoint]) {
 
 	// Create maps for new rules
 	ingressEndpointsMap := make(map[string]policyinfo.ClusterEndpointInfo)
@@ -52,8 +51,7 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 
 	podSelectorEndpointSet := sets.New(podSelectorEndpoints...)
 
-	var modifiedCPEs []policyinfo.ClusterPolicyEndpoint
-	var potentialDeletes []policyinfo.ClusterPolicyEndpoint
+	targets := newClusterPolicyEndpointTargets()
 
 	// Process existing CPEs (following the same logic as regular PE processing)
 	for i := range existingCPEs {
@@ -96,43 +94,35 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 		existingCPEs[i].Spec.Priority = metadata.Priority
 		existingCPEs[i].Spec.Subject = metadata.Subject
 
-		// Determine if CPE should be modified or potentially deleted
-		if len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0 {
-			// CPE has no matching rules - mark for potential deletion
-			existingCPEs[i].Spec.Ingress = ingEndpointList
-			existingCPEs[i].Spec.Egress = egEndpointList
-			existingCPEs[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
-			potentialDeletes = append(potentialDeletes, existingCPEs[i])
-		} else if len(existingCPEs[i].Spec.Ingress) != len(ingEndpointList) ||
+		// An emptied CPE is a potential delete; one that lost endpoints or whose metadata changed
+		// has to be written.
+		empty := len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0
+		changed := len(existingCPEs[i].Spec.Ingress) != len(ingEndpointList) ||
 			len(existingCPEs[i].Spec.Egress) != len(egEndpointList) ||
 			len(existingCPEs[i].Spec.PodSelectorEndpoints) != len(podSelectorEndpointList) ||
-			tierChanged || priorityChanged || subjectChanged {
-			// CPE has changed - update it
+			tierChanged || priorityChanged || subjectChanged
+		if empty || changed {
 			existingCPEs[i].Spec.Ingress = ingEndpointList
 			existingCPEs[i].Spec.Egress = egEndpointList
 			existingCPEs[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
-			modifiedCPEs = append(modifiedCPEs, existingCPEs[i])
-		} else {
-			// CPE unchanged - keep it as is
-			modifiedCPEs = append(modifiedCPEs, existingCPEs[i])
 		}
+		targets.addExisting(existingCPEs[i], empty, changed)
 	}
+	targets.sortPotentialDeletes()
 
-	return ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedCPEs, potentialDeletes
+	return ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, targets
 }
 
 // packingClusterIngressRules chunks cluster ingress rules across CPE objects
 func (m *policyEndpointsManager) packingClusterIngressRules(metadata ClusterPolicyMetadata,
-	rulesMap map[string]policyinfo.ClusterEndpointInfo,
-	createCPEs, modifiedCPEs, potentialDeletes []policyinfo.ClusterPolicyEndpoint) ([]policyinfo.ClusterPolicyEndpoint, sets.Set[types.NamespacedName]) {
+	rulesMap map[string]policyinfo.ClusterEndpointInfo, targets *packTargets[policyinfo.ClusterPolicyEndpoint]) {
 
-	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	ingressList := maps.Keys(rulesMap)
 
-	// Fill existing CPEs first
-	for _, sliceToCheck := range [][]policyinfo.ClusterPolicyEndpoint{modifiedCPEs, potentialDeletes, createCPEs} {
+	// Fill the targets cheapest first, then create new CPEs if needed
+	for _, sliceToCheck := range targets.fillOrder() {
 		for i := range sliceToCheck {
 			chunkStartIdx = chunkEndIdx
 			if len(sliceToCheck[i].Spec.Ingress) < m.endpointChunkSize && chunkEndIdx < len(ingressList) {
@@ -143,7 +133,7 @@ func (m *policyEndpointsManager) packingClusterIngressRules(metadata ClusterPoli
 				chunkEndIdx++
 			}
 			if chunkStartIdx != chunkEndIdx {
-				doNotDelete.Insert(types.NamespacedName{Name: sliceToCheck[i].Name})
+				targets.markWritten(&sliceToCheck[i])
 			}
 		}
 	}
@@ -153,24 +143,21 @@ func (m *policyEndpointsManager) packingClusterIngressRules(metadata ClusterPoli
 		ingressRuleChunks := lo.Chunk(ingressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range ingressRuleChunks {
 			newCPE := m.newClusterPolicyEndpoint(metadata, m.getClusterEndpointInfoFromHashes(chunk, rulesMap), nil, nil)
-			createCPEs = append(createCPEs, newCPE)
+			targets.created = append(targets.created, newCPE)
 		}
 	}
-	return createCPEs, doNotDelete
 }
 
 // packingClusterEgressRules chunks cluster egress rules across CPE objects
 func (m *policyEndpointsManager) packingClusterEgressRules(metadata ClusterPolicyMetadata,
-	rulesMap map[string]policyinfo.ClusterEndpointInfo,
-	createCPEs, modifiedCPEs, potentialDeletes []policyinfo.ClusterPolicyEndpoint) ([]policyinfo.ClusterPolicyEndpoint, sets.Set[types.NamespacedName]) {
+	rulesMap map[string]policyinfo.ClusterEndpointInfo, targets *packTargets[policyinfo.ClusterPolicyEndpoint]) {
 
-	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	egressList := maps.Keys(rulesMap)
 
-	// Fill existing CPEs first
-	for _, sliceToCheck := range [][]policyinfo.ClusterPolicyEndpoint{modifiedCPEs, potentialDeletes, createCPEs} {
+	// Fill the targets cheapest first, then create new CPEs if needed
+	for _, sliceToCheck := range targets.fillOrder() {
 		for i := range sliceToCheck {
 			chunkStartIdx = chunkEndIdx
 			if len(sliceToCheck[i].Spec.Egress) < m.endpointChunkSize && chunkEndIdx < len(egressList) {
@@ -181,7 +168,7 @@ func (m *policyEndpointsManager) packingClusterEgressRules(metadata ClusterPolic
 				chunkEndIdx++
 			}
 			if chunkStartIdx != chunkEndIdx {
-				doNotDelete.Insert(types.NamespacedName{Name: sliceToCheck[i].Name})
+				targets.markWritten(&sliceToCheck[i])
 			}
 		}
 	}
@@ -191,23 +178,20 @@ func (m *policyEndpointsManager) packingClusterEgressRules(metadata ClusterPolic
 		egressRuleChunks := lo.Chunk(egressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range egressRuleChunks {
 			newCPE := m.newClusterPolicyEndpoint(metadata, nil, m.getClusterEndpointInfoFromHashes(chunk, rulesMap), nil)
-			createCPEs = append(createCPEs, newCPE)
+			targets.created = append(targets.created, newCPE)
 		}
 	}
-	return createCPEs, doNotDelete
 }
 
 // packingClusterPodSelectorEndpoints chunks pod selector endpoints across CPE objects
 func (m *policyEndpointsManager) packingClusterPodSelectorEndpoints(metadata ClusterPolicyMetadata,
-	psList []policyinfo.PodEndpoint,
-	createCPEs, modifiedCPEs, potentialDeletes []policyinfo.ClusterPolicyEndpoint) ([]policyinfo.ClusterPolicyEndpoint, sets.Set[types.NamespacedName]) {
+	psList []policyinfo.PodEndpoint, targets *packTargets[policyinfo.ClusterPolicyEndpoint]) {
 
-	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 
-	// Fill existing CPEs first
-	for _, sliceToCheck := range [][]policyinfo.ClusterPolicyEndpoint{modifiedCPEs, potentialDeletes, createCPEs} {
+	// Fill the targets cheapest first, then create new CPEs if needed
+	for _, sliceToCheck := range targets.fillOrder() {
 		for i := range sliceToCheck {
 			chunkStartIdx = chunkEndIdx
 			if len(sliceToCheck[i].Spec.PodSelectorEndpoints) < m.endpointChunkSize && chunkEndIdx < len(psList) {
@@ -218,7 +202,7 @@ func (m *policyEndpointsManager) packingClusterPodSelectorEndpoints(metadata Clu
 				chunkEndIdx++
 			}
 			if chunkStartIdx != chunkEndIdx {
-				doNotDelete.Insert(types.NamespacedName{Name: sliceToCheck[i].Name})
+				targets.markWritten(&sliceToCheck[i])
 			}
 		}
 	}
@@ -228,10 +212,9 @@ func (m *policyEndpointsManager) packingClusterPodSelectorEndpoints(metadata Clu
 		psChunks := lo.Chunk(psList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range psChunks {
 			newCPE := m.newClusterPolicyEndpoint(metadata, nil, nil, chunk)
-			createCPEs = append(createCPEs, newCPE)
+			targets.created = append(targets.created, newCPE)
 		}
 	}
-	return createCPEs, doNotDelete
 }
 
 // newClusterPolicyEndpoint creates a new ClusterPolicyEndpoint object
