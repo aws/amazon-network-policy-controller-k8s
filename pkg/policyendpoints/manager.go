@@ -631,6 +631,9 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 // it fills the targets cheapest first and creates new policy endpoints for the ingress rules that do not fit.
 func (m *policyEndpointsManager) packingIngressRules(metadata PolicyMetadata,
 	rulesMap map[string]policyinfo.EndpointInfo, targets *packTargets[policyinfo.PolicyEndpoint]) {
+	if len(rulesMap) == 0 {
+		return
+	}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	ingressList := maps.Keys(rulesMap)
@@ -671,6 +674,9 @@ func (m *policyEndpointsManager) packingIngressRules(metadata PolicyMetadata,
 // it fills the targets cheapest first and creates new policy endpoints for the egress rules that do not fit.
 func (m *policyEndpointsManager) packingEgressRules(metadata PolicyMetadata,
 	rulesMap map[string]policyinfo.EndpointInfo, targets *packTargets[policyinfo.PolicyEndpoint]) {
+	if len(rulesMap) == 0 {
+		return
+	}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	egressList := maps.Keys(rulesMap)
@@ -711,6 +717,9 @@ func (m *policyEndpointsManager) packingEgressRules(metadata PolicyMetadata,
 // it fills the targets cheapest first and creates new policy endpoints for the pod selectors that do not fit.
 func (m *policyEndpointsManager) packingPodSelectorEndpoints(metadata PolicyMetadata,
 	psList []policyinfo.PodEndpoint, targets *packTargets[policyinfo.PolicyEndpoint]) {
+	if len(psList) == 0 {
+		return
+	}
 
 	chunkStartIdx := 0
 	chunkEndIdx := 0

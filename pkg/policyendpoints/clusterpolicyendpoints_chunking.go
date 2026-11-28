@@ -116,6 +116,9 @@ func (m *policyEndpointsManager) processExistingClusterPolicyEndpoints(
 // packingClusterIngressRules chunks cluster ingress rules across CPE objects
 func (m *policyEndpointsManager) packingClusterIngressRules(metadata ClusterPolicyMetadata,
 	rulesMap map[string]policyinfo.ClusterEndpointInfo, targets *packTargets[policyinfo.ClusterPolicyEndpoint]) {
+	if len(rulesMap) == 0 {
+		return
+	}
 
 	chunkStartIdx := 0
 	chunkEndIdx := 0
@@ -151,6 +154,9 @@ func (m *policyEndpointsManager) packingClusterIngressRules(metadata ClusterPoli
 // packingClusterEgressRules chunks cluster egress rules across CPE objects
 func (m *policyEndpointsManager) packingClusterEgressRules(metadata ClusterPolicyMetadata,
 	rulesMap map[string]policyinfo.ClusterEndpointInfo, targets *packTargets[policyinfo.ClusterPolicyEndpoint]) {
+	if len(rulesMap) == 0 {
+		return
+	}
 
 	chunkStartIdx := 0
 	chunkEndIdx := 0
@@ -186,6 +192,9 @@ func (m *policyEndpointsManager) packingClusterEgressRules(metadata ClusterPolic
 // packingClusterPodSelectorEndpoints chunks pod selector endpoints across CPE objects
 func (m *policyEndpointsManager) packingClusterPodSelectorEndpoints(metadata ClusterPolicyMetadata,
 	psList []policyinfo.PodEndpoint, targets *packTargets[policyinfo.ClusterPolicyEndpoint]) {
+	if len(psList) == 0 {
+		return
+	}
 
 	chunkStartIdx := 0
 	chunkEndIdx := 0
