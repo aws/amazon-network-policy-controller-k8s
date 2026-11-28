@@ -103,7 +103,7 @@ func (t *packTargets[T]) addExisting(obj T, empty, changed bool) {
 		t.potentialDeletes = append(t.potentialDeletes, obj)
 	case changed:
 		t.modified = append(t.modified, obj)
-		t.markWritten(&obj)
+		t.markWritten(&t.modified[len(t.modified)-1])
 	default:
 		t.modified = append(t.modified, obj)
 	}

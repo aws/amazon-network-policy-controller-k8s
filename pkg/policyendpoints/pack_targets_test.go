@@ -37,3 +37,12 @@ func TestPack_PassWithNothingToPlaceLeavesTheTargetsAlone(t *testing.T) {
 	assert.Equal(t, []string{"z", "a"}, []string{clusterTargets.modified[0].Name, clusterTargets.modified[1].Name})
 	assert.Empty(t, clusterTargets.created)
 }
+
+// addExisting runs once per existing object on every reconcile. Filing an object must not move a
+// copy of it to the heap.
+func TestPack_AddExistingDoesNotAllocate(t *testing.T) {
+	targets := newPolicyEndpointTargets()
+	targets.modified = make([]policyinfo.PolicyEndpoint, 0, 16)
+	pe := policyinfo.PolicyEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "a"}}
+	assert.Zero(t, testing.AllocsPerRun(8, func() { targets.addExisting(pe, false, false) }))
+}
