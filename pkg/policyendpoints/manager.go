@@ -973,7 +973,12 @@ func combineClusterRulesEndpoints(endpoints []policyinfo.ClusterEndpointInfo) []
 		}
 
 		if existing, ok := combinedMap[key]; ok {
-			existing.Ports = deduplicatePorts(append(existing.Ports, ep.Ports...))
+			// No ports means every port, so it absorbs any specific ports.
+			if len(ep.Ports) == 0 || len(existing.Ports) == 0 {
+				existing.Ports = []policyinfo.Port{}
+			} else {
+				existing.Ports = deduplicatePorts(append(existing.Ports, ep.Ports...))
+			}
 			combinedMap[key] = existing
 		} else {
 			combinedMap[key] = ep
