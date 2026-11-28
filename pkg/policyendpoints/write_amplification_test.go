@@ -293,6 +293,26 @@ func TestWrites_NoOpReconcile_NamedPortsInAnotherOrder(t *testing.T) {
 	assert.Zero(t, writes, "the same ports in another order are the same rule")
 }
 
+// ApplicationNetworkPolicy ingress resolves named ports on the same path as NetworkPolicy, so it
+// sees the same reordering.
+func TestWrites_NoOpReconcile_NamedPortsInAnotherOrder_ANP(t *testing.T) {
+	m := &policyEndpointsManager{endpointChunkSize: 3, logger: logr.Discard()}
+	s := newPECounter(1)
+	rng := rand.New(rand.NewSource(2))
+	pods := podEndpoints(seq(7))
+
+	reconcileANP(t, m, s, peers(8, shuffledPorts(rng)), pods)
+	require.Greater(t, len(s.objs), 1)
+
+	writes := 0
+	for range noopRounds {
+		ingress := peers(8, shuffledPorts(rng))
+		writes += reconcileANP(t, m, s, ingress, pods)
+		assertStoresDesired(t, s.objs, ingress, pods)
+	}
+	assert.Zero(t, writes)
+}
+
 func TestWrites_NoOpReconcile_CNP(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
