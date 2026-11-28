@@ -125,7 +125,7 @@ func (m *policyEndpointsManager) packingClusterIngressRules(metadata ClusterPoli
 	ingressList := maps.Keys(rulesMap)
 
 	// Fill the targets cheapest first, then create new CPEs if needed
-	for _, sliceToCheck := range targets.fillOrder() {
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.ClusterPolicyEndpoint) int { return len(pe.Spec.Ingress) }) {
 		for i := range sliceToCheck {
 			chunkStartIdx = chunkEndIdx
 			if len(sliceToCheck[i].Spec.Ingress) < m.endpointChunkSize && chunkEndIdx < len(ingressList) {
@@ -163,7 +163,7 @@ func (m *policyEndpointsManager) packingClusterEgressRules(metadata ClusterPolic
 	egressList := maps.Keys(rulesMap)
 
 	// Fill the targets cheapest first, then create new CPEs if needed
-	for _, sliceToCheck := range targets.fillOrder() {
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.ClusterPolicyEndpoint) int { return len(pe.Spec.Egress) }) {
 		for i := range sliceToCheck {
 			chunkStartIdx = chunkEndIdx
 			if len(sliceToCheck[i].Spec.Egress) < m.endpointChunkSize && chunkEndIdx < len(egressList) {
@@ -200,7 +200,7 @@ func (m *policyEndpointsManager) packingClusterPodSelectorEndpoints(metadata Clu
 	chunkEndIdx := 0
 
 	// Fill the targets cheapest first, then create new CPEs if needed
-	for _, sliceToCheck := range targets.fillOrder() {
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.ClusterPolicyEndpoint) int { return len(pe.Spec.PodSelectorEndpoints) }) {
 		for i := range sliceToCheck {
 			chunkStartIdx = chunkEndIdx
 			if len(sliceToCheck[i].Spec.PodSelectorEndpoints) < m.endpointChunkSize && chunkEndIdx < len(psList) {

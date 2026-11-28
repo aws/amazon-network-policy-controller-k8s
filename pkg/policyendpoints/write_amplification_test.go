@@ -533,3 +533,46 @@ func TestWrites_PodReplacement_WritesOneObject_ANP(t *testing.T) {
 	assert.Equal(t, rounds, writes, "each replacement should write only the object the old pod left")
 	assert.Len(t, s.objs, 3)
 }
+
+// removeRandom drops n random ids, the way pods go away during a scale-down or before their
+// replacements have an IP.
+func removeRandom(rng *rand.Rand, ids []int, n int) []int {
+	for range n {
+		i := rng.Intn(len(ids))
+		ids[i] = ids[len(ids)-1]
+		ids = ids[:len(ids)-1]
+	}
+	return ids
+}
+
+// Additions often arrive in a reconcile of their own. The pod handler ignores a pod until it has
+// an IP, so a replacement's removal and addition can land in different batches, and a scale-up
+// only adds. With nothing being written, the new pods belong in the untouched object with the most
+// room, so a batch that fits in one object costs one write. Filling untouched objects in name order
+// instead keeps the first objects full and leaves the removals' holes scattered, so each batch is
+// spread over several objects.
+func TestWrites_AdditionsInTheirOwnReconcileWriteOneObject(t *testing.T) {
+	for _, seed := range []int64{1, 2, 3} {
+		m := &policyEndpointsManager{endpointChunkSize: 200, logger: logr.Discard()}
+		s := newPECounter(seed)
+		rng := rand.New(rand.NewSource(seed + 10))
+		ids, next := seq(900), 900
+		ingress := peers(10, []policyinfo.Port{tcpPort(80)})
+
+		reconcileNP(t, m, s, ingress, podEndpoints(ids))
+		const rounds = 50
+		writes := 0
+		for range rounds {
+			ids = removeRandom(rng, ids, 10)
+			reconcileNP(t, m, s, ingress, podEndpoints(ids))
+			for range 10 {
+				ids = append(ids, next)
+				next++
+			}
+			writes += reconcileNP(t, m, s, ingress, podEndpoints(ids))
+			assertStoresDesired(t, s.objs, ingress, podEndpoints(ids))
+		}
+		assert.Equal(t, rounds, writes, "seed %d: each batch of additions fits in one object", seed)
+		assert.Len(t, s.objs, 5, "seed %d", seed)
+	}
+}

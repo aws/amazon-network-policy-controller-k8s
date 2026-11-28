@@ -55,12 +55,21 @@ func (t *packTargets[T]) markWritten(obj *T) {
 // fillOrder lists the targets cheapest first. An object costs one API call however many of its
 // endpoints change, so an endpoint is free in an object already being written, in an emptied one
 // (written either way, as an update or a delete) and in one being created. Anywhere else it costs
-// a write. Within each group objects go by name, so placement does not depend on list order.
-func (t *packTargets[T]) fillOrder() [][]T {
+// a write, so untouched objects go most room first, by held, the entries an object already has in
+// the field being filled: a batch then lands in as few of them as possible, and room does not pile
+// up in one object while the others stay full. Ties, and the objects being written, go by name, so
+// the order does not depend on list order.
+func (t *packTargets[T]) fillOrder(held func(*T) int) [][]T {
 	sort.Slice(t.modified, func(i, j int) bool {
 		ni, nj := t.name(&t.modified[i]), t.name(&t.modified[j])
-		if wi, wj := t.written.Has(ni), t.written.Has(nj); wi != wj {
+		wi, wj := t.written.Has(ni), t.written.Has(nj)
+		if wi != wj {
 			return wi
+		}
+		if !wi {
+			if hi, hj := held(&t.modified[i]), held(&t.modified[j]); hi != hj {
+				return hi < hj
+			}
 		}
 		return ni < nj
 	})

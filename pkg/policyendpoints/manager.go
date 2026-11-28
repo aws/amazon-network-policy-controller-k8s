@@ -639,7 +639,7 @@ func (m *policyEndpointsManager) packingIngressRules(metadata PolicyMetadata,
 	ingressList := maps.Keys(rulesMap)
 
 	// fill the targets cheapest first, then create new policy endpoints if needed
-	for _, sliceToCheck := range targets.fillOrder() {
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.PolicyEndpoint) int { return len(pe.Spec.Ingress) }) {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -682,7 +682,7 @@ func (m *policyEndpointsManager) packingEgressRules(metadata PolicyMetadata,
 	egressList := maps.Keys(rulesMap)
 
 	// fill the targets cheapest first, then create new policy endpoints if needed
-	for _, sliceToCheck := range targets.fillOrder() {
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.PolicyEndpoint) int { return len(pe.Spec.Egress) }) {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -725,7 +725,7 @@ func (m *policyEndpointsManager) packingPodSelectorEndpoints(metadata PolicyMeta
 	chunkEndIdx := 0
 
 	// fill the targets cheapest first, then create new policy endpoints if needed
-	for _, sliceToCheck := range targets.fillOrder() {
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.PolicyEndpoint) int { return len(pe.Spec.PodSelectorEndpoints) }) {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
