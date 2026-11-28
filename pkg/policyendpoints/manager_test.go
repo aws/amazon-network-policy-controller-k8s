@@ -1677,3 +1677,43 @@ func Test_policyEndpointsManager_sharedIngressStaysUngrouped(t *testing.T) {
 		"":   {"9.9.9.9/32"},
 	}, byGroup, "the shared rule belongs to the ungrouped object alone, not to either group")
 }
+
+// A CNP rule with no ports matches every port, so merging it with a port-80 rule for the same
+// peer and action must keep every port, not narrow the merged rule to port 80. For a Deny rule
+// the narrowed entry would let through traffic the policy denies.
+func TestCombineClusterRulesEndpoints_AllPortsWins(t *testing.T) {
+	protocolTCP := corev1.ProtocolTCP
+	port80 := int32(80)
+	for _, order := range [][]int{{0, 1}, {1, 0}} {
+		in := []policyinfo.ClusterEndpointInfo{
+			{CIDR: "10.0.0.1/32", Action: policyinfo.ClusterNetworkPolicyRuleActionDeny,
+				Ports: []policyinfo.Port{{Protocol: &protocolTCP, Port: &port80}}},
+			{CIDR: "10.0.0.1/32", Action: policyinfo.ClusterNetworkPolicyRuleActionDeny},
+		}
+		result := combineClusterRulesEndpoints([]policyinfo.ClusterEndpointInfo{in[order[0]], in[order[1]]})
+
+		assert.Len(t, result, 1)
+		assert.Empty(t, result[0].Ports, "order %v: all ports must win", order)
+	}
+}
+
+// The merge runs on each CPE after packing, so a CPE that holds both rules for a peer must store
+// the peer with every port.
+func TestComputeClusterPolicyEndpoints_AllPortsRuleIsNotNarrowed(t *testing.T) {
+	m := &policyEndpointsManager{endpointChunkSize: 200, logger: zap.New()}
+	protocolTCP := corev1.ProtocolTCP
+	port80 := int32(80)
+	cnp := &policyinfo.ClusterNetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "cnp"},
+		Spec: policyinfo.ClusterNetworkPolicySpec{Tier: "Admin", Priority: 10}}
+	ingress := []policyinfo.ClusterEndpointInfo{
+		{CIDR: "10.0.0.1/32", Action: policyinfo.ClusterNetworkPolicyRuleActionDeny},
+		{CIDR: "10.0.0.1/32", Action: policyinfo.ClusterNetworkPolicyRuleActionDeny,
+			Ports: []policyinfo.Port{{Protocol: &protocolTCP, Port: &port80}}},
+	}
+
+	created, _, _, err := m.computeClusterPolicyEndpoints(cnp, nil, ingress, nil, nil)
+	assert.NoError(t, err)
+	assert.Len(t, created, 1)
+	assert.Len(t, created[0].Spec.Ingress, 1)
+	assert.Empty(t, created[0].Spec.Ingress[0].Ports, "the peer must be denied on every port")
+}
