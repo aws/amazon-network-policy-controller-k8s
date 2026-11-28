@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/resolvers"
@@ -43,6 +44,32 @@ func BenchmarkComputePolicyEndpoints_NoOp(b *testing.B) {
 				if _, _, _, err := m.computePolicyEndpoints(writeTestNP, existing, groups, nil, nil); err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+// BenchmarkEndpointInfoKey measures the key computed for every desired and stored entry on every
+// reconcile, for port lists in and out of canonical order. A DNS rule usually lists UDP before
+// TCP, which is out of order.
+func BenchmarkEndpointInfoKey(b *testing.B) {
+	udp := corev1.ProtocolUDP
+	udp53 := policyinfo.Port{Protocol: &udp, Port: tcpPort(53).Port}
+	for _, bc := range []struct {
+		name  string
+		ports []policyinfo.Port
+	}{
+		{"one port", []policyinfo.Port{tcpPort(80)}},
+		{"two ports sorted", []policyinfo.Port{tcpPort(80), tcpPort(443)}},
+		{"two ports unsorted", []policyinfo.Port{tcpPort(443), tcpPort(80)}},
+		{"DNS UDP then TCP", []policyinfo.Port{udp53, tcpPort(53)}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			m := &policyEndpointsManager{}
+			info := policyinfo.EndpointInfo{CIDR: "10.0.0.1/32", Ports: bc.ports}
+			b.ReportAllocs()
+			for range b.N {
+				m.getEndpointInfoKey(info)
 			}
 		})
 	}
