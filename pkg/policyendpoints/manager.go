@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -347,30 +348,22 @@ func (m *policyEndpointsManager) packPolicyEndpointGroup(npMetadata PolicyMetada
 	podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint,
 	[]policyinfo.PolicyEndpoint) {
 
-	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
+	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, targets := m.processExistingPolicyEndpoints(
 		npMetadata.PolicyTypes, existing, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
 	)
 
-	var createPolicyEndpoints []policyinfo.PolicyEndpoint
-	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(npMetadata, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(npMetadata, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(npMetadata, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-
-	doNotDelete := sets.Set[types.NamespacedName]{}
-	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
-
-	var updatePolicyEndpoints, deletePolicyEndpoints []policyinfo.PolicyEndpoint
-	for _, ep := range potentialDeletes {
-		if doNotDelete.Has(k8s.NamespacedName(&ep)) {
-			updatePolicyEndpoints = append(updatePolicyEndpoints, ep)
-		} else {
-			deletePolicyEndpoints = append(deletePolicyEndpoints, ep)
+	// An object that moves to this group is written for the restamp, so it is a free target too.
+	for i := range targets.modified {
+		if targets.modified[i].Spec.TargetGroup != targetGroup {
+			targets.markWritten(&targets.modified[i])
 		}
 	}
-	updatePolicyEndpoints = append(updatePolicyEndpoints, modifiedEndpoints...)
 
+	m.packingIngressRules(npMetadata, ingressEndpointsMap, targets)
+	m.packingEgressRules(npMetadata, egressEndpointsMap, targets)
+	m.packingPodSelectorEndpoints(npMetadata, podSelectorEndpointSet.UnsortedList(), targets)
+
+	createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints := targets.result()
 	for i := range createPolicyEndpoints {
 		createPolicyEndpoints[i].Spec.TargetGroup = targetGroup
 	}
@@ -492,8 +485,10 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 	return ruleList
 }
 
-// TODO: this can return different hash for semantically same endpointinfo as port slice order can generate separate hash.
-// Check how its tied in bin packing algo and fix if needed
+// getEndpointInfoKey is the identity a reconcile matches stored rules against desired ones by. A
+// stored rule whose key is not desired is purged and its replacement packed anew, possibly into
+// another object, so the key must not change for the same rule: ports are hashed in canonical
+// order. Excepts are hashed as given, since they come from the policy spec in a stable order.
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
 	hasher := sha256.New()
 	// Each "field=value|" record is assembled in a small scratch buffer and
@@ -519,12 +514,26 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 		}
 	}
 
-	for _, port := range info.Ports {
+	var portScratch [8]policyinfo.Port
+	for _, port := range canonicalPortOrder(info.Ports, portScratch[:]) {
 		write("proto=", protocolKeyPart(port.Protocol))
 		write("port=", int32PtrKeyPart(port.Port))
 		write("endPort=", int32PtrKeyPart(port.EndPort))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// canonicalPortOrder returns ports sorted by policyequality.ComparePorts without reordering the
+// caller's slice, which a resolver may share across many rules. A sorted list is returned as is.
+// An unsorted one is sorted in scratch, so a caller that passes a stack array does not allocate
+// for lists that fit in it.
+func canonicalPortOrder(ports, scratch []policyinfo.Port) []policyinfo.Port {
+	if slices.IsSortedFunc(ports, policyequality.ComparePorts) {
+		return ports
+	}
+	sorted := append(scratch[:0], ports...)
+	slices.SortFunc(sorted, policyequality.ComparePorts)
+	return sorted
 }
 
 // protocolKeyPart renders a protocol pointer for hashing, using "nil" for an
@@ -546,7 +555,7 @@ func int32PtrKeyPart(p *int32) string {
 }
 
 // processExistingPolicyEndpoints processes the existing policies with the incoming policy changes
-// it returns required rules and pod selector changes, and potential modifications and deletions on policy endpoints.
+// it returns the rules and pod selector endpoints still to place, and the existing policy endpoints to place them into.
 func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	policyTypes []networking.PolicyType,
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
@@ -555,8 +564,7 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	map[string]policyinfo.EndpointInfo,
 	map[string]policyinfo.EndpointInfo,
 	sets.Set[policyinfo.PodEndpoint],
-	[]policyinfo.PolicyEndpoint,
-	[]policyinfo.PolicyEndpoint,
+	*packTargets[policyinfo.PolicyEndpoint],
 ) {
 
 	// Loop through ingressEndpoints, egressEndpoints and podSelectorEndpoints and put in map
@@ -570,14 +578,13 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 	}
 	podSelectorEndpointSet := sets.New[policyinfo.PodEndpoint](podSelectorEndpoints...)
 	// Go over the existing endpoints, and remove entries that are no longer needed
-	var modifiedEndpoints []policyinfo.PolicyEndpoint
-	var potentialDeletes []policyinfo.PolicyEndpoint
+	targets := newPolicyEndpointTargets()
 
 	// We loop through existing PolicyEndpoint resources for the current Policy and purge any stale endpoints across Ingress,
-	// Egress and PodSelector endpoints. Once a PolicyEndpoint resource is updated/processed we place it in modifiedEndpoints list
+	// Egress and PodSelector endpoints. Once a PolicyEndpoint resource is updated/processed we place it in the modified targets,
 	// and if a particular PolicyEndpoint resource is purged of all the endpoints, we mark it as a potential delete candidate.
-	// We then start bin-packing any new Ingress, Egress, PodSelector endpoints across the existing PolicyEndpoint resources placed
-	// in modified and potential delete candidate lists. We only create new PolicyEndpoint resources if we exhaust all the existing resources.
+	// We then start bin-packing any new Ingress, Egress, PodSelector endpoints across the existing PolicyEndpoint resources,
+	// cheapest first (see packTargets.fillOrder). We only create new PolicyEndpoint resources if we exhaust all the existing resources.
 	// Any PolicyEndpoint resources placed in potentialDelete bucket that aren't utilized at the end of the binpacking flow will be permanently deleted.
 	for i := range existingPolicyEndpoints {
 		ingEndpointList := make([]policyinfo.EndpointInfo, 0, len(existingPolicyEndpoints[i].Spec.Ingress))
@@ -609,36 +616,33 @@ func (m *policyEndpointsManager) processExistingPolicyEndpoints(
 			policyEndpointChanged = true
 		}
 
-		if len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0 {
+		empty := len(ingEndpointList) == 0 && len(egEndpointList) == 0 && len(podSelectorEndpointList) == 0
+		changed := len(existingPolicyEndpoints[i].Spec.Ingress) != len(ingEndpointList) || len(existingPolicyEndpoints[i].Spec.Egress) != len(egEndpointList) ||
+			len(existingPolicyEndpoints[i].Spec.PodSelectorEndpoints) != len(podSelectorEndpointList) || policyEndpointChanged
+		if empty || changed {
 			existingPolicyEndpoints[i].Spec.Ingress = ingEndpointList
 			existingPolicyEndpoints[i].Spec.Egress = egEndpointList
 			existingPolicyEndpoints[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
-			potentialDeletes = append(potentialDeletes, existingPolicyEndpoints[i])
-		} else if len(existingPolicyEndpoints[i].Spec.Ingress) != len(ingEndpointList) || len(existingPolicyEndpoints[i].Spec.Egress) != len(egEndpointList) ||
-			len(existingPolicyEndpoints[i].Spec.PodSelectorEndpoints) != len(podSelectorEndpointList) || policyEndpointChanged {
-			existingPolicyEndpoints[i].Spec.Ingress = ingEndpointList
-			existingPolicyEndpoints[i].Spec.Egress = egEndpointList
-			existingPolicyEndpoints[i].Spec.PodSelectorEndpoints = podSelectorEndpointList
-			modifiedEndpoints = append(modifiedEndpoints, existingPolicyEndpoints[i])
-		} else {
-			modifiedEndpoints = append(modifiedEndpoints, existingPolicyEndpoints[i])
 		}
+		targets.addExisting(existingPolicyEndpoints[i], empty, changed)
 	}
-	return ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes
+	targets.sortPotentialDeletes()
+	return ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, targets
 }
 
 // packingIngressRules iterates over ingress rules across available policy endpoints and required ingress rule changes.
-// it returns the ingress rules packed in policy endpoints and a set of policy endpoints that need to be kept.
+// it fills the targets cheapest first and creates new policy endpoints for the ingress rules that do not fit.
 func (m *policyEndpointsManager) packingIngressRules(metadata PolicyMetadata,
-	rulesMap map[string]policyinfo.EndpointInfo,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
-	doNotDelete := sets.Set[types.NamespacedName]{}
+	rulesMap map[string]policyinfo.EndpointInfo, targets *packTargets[policyinfo.PolicyEndpoint]) {
+	if len(rulesMap) == 0 {
+		return
+	}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	ingressList := maps.Keys(rulesMap)
 
-	// try to fill existing polciy endpoints first and then new ones if needed
-	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
+	// fill the targets cheapest first, then create new policy endpoints if needed
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.PolicyEndpoint) int { return len(pe.Spec.Ingress) }) {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -654,7 +658,7 @@ func (m *policyEndpointsManager) packingIngressRules(metadata PolicyMetadata,
 			}
 			// as long as the second pointer moves, we need to include the PE
 			if chunkStartIdx != chunkEndIdx {
-				doNotDelete.Insert(k8s.NamespacedName(&sliceToCheck[i]))
+				targets.markWritten(&sliceToCheck[i])
 			}
 		}
 	}
@@ -664,24 +668,24 @@ func (m *policyEndpointsManager) packingIngressRules(metadata PolicyMetadata,
 		ingressRuleChunks := lo.Chunk(ingressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range ingressRuleChunks {
 			newEP := m.newPolicyEndpoint(metadata, m.getListOfEndpointInfoFromHash(chunk, rulesMap), nil, nil)
-			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
+			targets.created = append(targets.created, newEP)
 		}
 	}
-	return createPolicyEndpoints, doNotDelete
 }
 
 // packingEgressRules iterates over egress rules across available policy endpoints and required egress rule changes.
-// it returns the egress rules packed in policy endpoints and a set of policy endpoints that need to be kept.
+// it fills the targets cheapest first and creates new policy endpoints for the egress rules that do not fit.
 func (m *policyEndpointsManager) packingEgressRules(metadata PolicyMetadata,
-	rulesMap map[string]policyinfo.EndpointInfo,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
-	doNotDelete := sets.Set[types.NamespacedName]{}
+	rulesMap map[string]policyinfo.EndpointInfo, targets *packTargets[policyinfo.PolicyEndpoint]) {
+	if len(rulesMap) == 0 {
+		return
+	}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 	egressList := maps.Keys(rulesMap)
 
-	// try to fill existing polciy endpoints first and then new ones if needed
-	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
+	// fill the targets cheapest first, then create new policy endpoints if needed
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.PolicyEndpoint) int { return len(pe.Spec.Egress) }) {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -697,7 +701,7 @@ func (m *policyEndpointsManager) packingEgressRules(metadata PolicyMetadata,
 			}
 			// as long as the second pointer moves, we need to include the PE
 			if chunkStartIdx != chunkEndIdx {
-				doNotDelete.Insert(k8s.NamespacedName(&sliceToCheck[i]))
+				targets.markWritten(&sliceToCheck[i])
 			}
 		}
 	}
@@ -707,24 +711,24 @@ func (m *policyEndpointsManager) packingEgressRules(metadata PolicyMetadata,
 		egressRuleChunks := lo.Chunk(egressList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range egressRuleChunks {
 			newEP := m.newPolicyEndpoint(metadata, nil, m.getListOfEndpointInfoFromHash(chunk, rulesMap), nil)
-			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
+			targets.created = append(targets.created, newEP)
 		}
 	}
-	return createPolicyEndpoints, doNotDelete
 }
 
 // packingPodSelectorEndpoints iterates over pod selectors across available policy endpoints and required pod selector changes.
-// it returns the pod selectors packed in policy endpoints and a set of policy endpoints that need to be kept.
+// it fills the targets cheapest first and creates new policy endpoints for the pod selectors that do not fit.
 func (m *policyEndpointsManager) packingPodSelectorEndpoints(metadata PolicyMetadata,
-	psList []policyinfo.PodEndpoint,
-	createPolicyEndpoints, modifiedEndpoints, potentialDeletes []policyinfo.PolicyEndpoint) ([]policyinfo.PolicyEndpoint, sets.Set[types.NamespacedName]) {
+	psList []policyinfo.PodEndpoint, targets *packTargets[policyinfo.PolicyEndpoint]) {
+	if len(psList) == 0 {
+		return
+	}
 
-	doNotDelete := sets.Set[types.NamespacedName]{}
 	chunkStartIdx := 0
 	chunkEndIdx := 0
 
-	// try to fill existing polciy endpoints first and then new ones if needed
-	for _, sliceToCheck := range [][]policyinfo.PolicyEndpoint{modifiedEndpoints, potentialDeletes, createPolicyEndpoints} {
+	// fill the targets cheapest first, then create new policy endpoints if needed
+	for _, sliceToCheck := range targets.fillOrder(func(pe *policyinfo.PolicyEndpoint) int { return len(pe.Spec.PodSelectorEndpoints) }) {
 		for i := range sliceToCheck {
 			// reset start pointer if end pointer is updated
 			chunkStartIdx = chunkEndIdx
@@ -740,7 +744,7 @@ func (m *policyEndpointsManager) packingPodSelectorEndpoints(metadata PolicyMeta
 			}
 			// as long as the second pointer moves, we need to include the PE
 			if chunkStartIdx != chunkEndIdx {
-				doNotDelete.Insert(k8s.NamespacedName(&sliceToCheck[i]))
+				targets.markWritten(&sliceToCheck[i])
 			}
 		}
 	}
@@ -750,10 +754,9 @@ func (m *policyEndpointsManager) packingPodSelectorEndpoints(metadata PolicyMeta
 		psChunks := lo.Chunk(psList[chunkEndIdx:], m.endpointChunkSize)
 		for _, chunk := range psChunks {
 			newEP := m.newPolicyEndpoint(metadata, nil, nil, chunk)
-			createPolicyEndpoints = append(createPolicyEndpoints, newEP)
+			targets.created = append(targets.created, newEP)
 		}
 	}
-	return createPolicyEndpoints, doNotDelete
 }
 
 // computeApplicationNetworkPolicyEndpoints computes the policy endpoints for the given ANP
@@ -762,17 +765,6 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 	existingPolicyEndpoints []policyinfo.PolicyEndpoint, ingressEndpoints []policyinfo.EndpointInfo,
 	egressEndpoints []policyinfo.EndpointInfo, podSelectorEndpoints []policyinfo.PodEndpoint) ([]policyinfo.PolicyEndpoint,
 	[]policyinfo.PolicyEndpoint, []policyinfo.PolicyEndpoint, error) {
-
-	// Process existing endpoints for ANP
-	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedEndpoints, potentialDeletes := m.processExistingPolicyEndpoints(
-		anp.Spec.PolicyTypes, existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints,
-	)
-
-	doNotDelete := sets.Set[types.NamespacedName]{}
-
-	var createPolicyEndpoints []policyinfo.PolicyEndpoint
-	var updatePolicyEndpoints []policyinfo.PolicyEndpoint
-	var deletePolicyEndpoints []policyinfo.PolicyEndpoint
 
 	// Create metadata for ApplicationNetworkPolicy
 	anpMetadata := PolicyMetadata{
@@ -785,23 +777,9 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 		Kind:        "ApplicationNetworkPolicy",
 	}
 
-	// Reuse existing packing functions - ANP ingress rules are identical to NetworkPolicy
-	createPolicyEndpoints, doNotDeleteIngress := m.packingIngressRules(anpMetadata, ingressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-	createPolicyEndpoints, doNotDeleteEgress := m.packingEgressRules(anpMetadata, egressEndpointsMap, createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-	createPolicyEndpoints, doNotDeletePs := m.packingPodSelectorEndpoints(anpMetadata, podSelectorEndpointSet.UnsortedList(), createPolicyEndpoints, modifiedEndpoints, potentialDeletes)
-
-	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
-
-	for _, ep := range potentialDeletes {
-		if doNotDelete.Has(k8s.NamespacedName(&ep)) {
-			updatePolicyEndpoints = append(updatePolicyEndpoints, ep)
-		} else {
-			deletePolicyEndpoints = append(deletePolicyEndpoints, ep)
-		}
-	}
-	updatePolicyEndpoints = append(updatePolicyEndpoints, modifiedEndpoints...)
+	// ANP rules pack exactly like an ungrouped NetworkPolicy's.
+	createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints := m.packPolicyEndpointGroup(anpMetadata, "",
+		existingPolicyEndpoints, ingressEndpoints, egressEndpoints, podSelectorEndpoints)
 	if len(createPolicyEndpoints) == 0 && len(updatePolicyEndpoints) == 0 {
 		if len(deletePolicyEndpoints) == 0 {
 			newEP := m.newPolicyEndpoint(anpMetadata, nil, nil, nil)
@@ -906,33 +884,15 @@ func (m *policyEndpointsManager) computeClusterPolicyEndpoints(cnp *policyinfo.C
 		Subject:  cnp.Spec.Subject,
 	}
 
-	// Process existing CPEs and convert rules to maps for chunking
-	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, modifiedCPEs, potentialDeletes := m.processExistingClusterPolicyEndpoints(
+	ingressEndpointsMap, egressEndpointsMap, podSelectorEndpointSet, targets := m.processExistingClusterPolicyEndpoints(
 		existingCPEs, ingressRules, egressRules, podSelectorEndpoints, cnpMetadata,
 	)
 
-	doNotDelete := sets.Set[types.NamespacedName]{}
-	var createCPEs []policyinfo.ClusterPolicyEndpoint
-	var updateCPEs []policyinfo.ClusterPolicyEndpoint
-	var deleteCPEs []policyinfo.ClusterPolicyEndpoint
+	m.packingClusterIngressRules(cnpMetadata, ingressEndpointsMap, targets)
+	m.packingClusterEgressRules(cnpMetadata, egressEndpointsMap, targets)
+	m.packingClusterPodSelectorEndpoints(cnpMetadata, podSelectorEndpointSet.UnsortedList(), targets)
 
-	// Use chunking logic (same pattern as NP/ANP)
-	createCPEs, doNotDeleteIngress := m.packingClusterIngressRules(cnpMetadata, ingressEndpointsMap, createCPEs, modifiedCPEs, potentialDeletes)
-	createCPEs, doNotDeleteEgress := m.packingClusterEgressRules(cnpMetadata, egressEndpointsMap, createCPEs, modifiedCPEs, potentialDeletes)
-	createCPEs, doNotDeletePs := m.packingClusterPodSelectorEndpoints(cnpMetadata, podSelectorEndpointSet.UnsortedList(), createCPEs, modifiedCPEs, potentialDeletes)
-
-	doNotDelete.Insert(doNotDeleteIngress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeleteEgress.UnsortedList()...)
-	doNotDelete.Insert(doNotDeletePs.UnsortedList()...)
-
-	for _, cpe := range potentialDeletes {
-		if doNotDelete.Has(types.NamespacedName{Name: cpe.Name}) {
-			updateCPEs = append(updateCPEs, cpe)
-		} else {
-			deleteCPEs = append(deleteCPEs, cpe)
-		}
-	}
-	updateCPEs = append(updateCPEs, modifiedCPEs...)
+	createCPEs, updateCPEs, deleteCPEs := targets.result()
 
 	// Ensure at least one CPE exists
 	if len(createCPEs) == 0 && len(updateCPEs) == 0 {

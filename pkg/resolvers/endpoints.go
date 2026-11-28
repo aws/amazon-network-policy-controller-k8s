@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	policyinfo "github.com/aws/amazon-network-policy-controller-k8s/api/v1alpha1"
+	policyequality "github.com/aws/amazon-network-policy-controller-k8s/pkg/equality"
 	"github.com/aws/amazon-network-policy-controller-k8s/pkg/k8s"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -821,8 +823,10 @@ func dedupPorts(policyPorts []policyinfo.Port) []policyinfo.Port {
 	for _, port := range policyPorts {
 		ports[portKey(port)] = port
 	}
-	if len(ports) > 0 {
-		return maps.Values(ports)
+	if len(ports) == 0 {
+		return nil
 	}
-	return nil
+	deduped := maps.Values(ports)
+	slices.SortFunc(deduped, policyequality.ComparePorts)
+	return deduped
 }

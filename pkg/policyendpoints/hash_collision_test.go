@@ -131,3 +131,53 @@ func Test_getClusterEndpointInfoKey_surrogateBlockPorts_noCollision(t *testing.T
 	// A surrogate-block port must also stay distinct from a port outside it.
 	assert.NotEqual(t, m.getClusterEndpointInfoKey(cpe(55296)), m.getClusterEndpointInfoKey(cpe(40000)))
 }
+
+// dedupPorts returns a named port's resolved ports in map order, so the same rule can arrive with
+// its ports in any order. The key is the rule's identity and must not depend on that order.
+func Test_getEndpointInfoKey_portOrderInsensitive(t *testing.T) {
+	m := &policyEndpointsManager{}
+	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
+	ports := []policyinfo.Port{
+		{Protocol: &tcp, Port: i32(8080)},
+		{Protocol: &udp, Port: i32(53)},
+		{Protocol: &tcp, Port: i32(80)},
+		{Protocol: &tcp, Port: i32(1000), EndPort: i32(2000)},
+		{Protocol: &tcp},
+		{},
+	}
+	reversed := make([]policyinfo.Port, len(ports))
+	for i, p := range ports {
+		reversed[len(ports)-1-i] = p
+	}
+
+	a := policyinfo.EndpointInfo{CIDR: "10.0.0.0/24", Ports: ports}
+	b := policyinfo.EndpointInfo{CIDR: "10.0.0.0/24", Ports: reversed}
+	assert.Equal(t, m.getEndpointInfoKey(a), m.getEndpointInfoKey(b))
+	assert.Equal(t, i32(8080), a.Ports[0].Port, "computing the key must not reorder the caller's ports")
+
+	ca := policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Action: "Accept", Ports: ports}
+	cb := policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Action: "Accept", Ports: reversed}
+	assert.Equal(t, m.getClusterEndpointInfoKey(ca), m.getClusterEndpointInfoKey(cb))
+}
+
+// The key runs for every desired and stored entry on every reconcile. Ports listed out of
+// canonical order, like a DNS rule's [UDP 53, TCP 53] or [443, 80], must not cost an allocation
+// per entry for the sort.
+func Test_endpointKeys_unsortedPortsDoNotAllocateMore(t *testing.T) {
+	m := &policyEndpointsManager{}
+	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
+	sorted := []policyinfo.Port{{Protocol: &tcp, Port: i32(53)}, {Protocol: &udp, Port: i32(53)}}
+	unsorted := []policyinfo.Port{{Protocol: &udp, Port: i32(53)}, {Protocol: &tcp, Port: i32(53)}}
+
+	allocs := func(f func()) float64 { return testing.AllocsPerRun(100, f) }
+	assert.Equal(t,
+		allocs(func() { m.getEndpointInfoKey(policyinfo.EndpointInfo{CIDR: "10.0.0.0/24", Ports: sorted}) }),
+		allocs(func() { m.getEndpointInfoKey(policyinfo.EndpointInfo{CIDR: "10.0.0.0/24", Ports: unsorted}) }))
+	assert.Equal(t,
+		allocs(func() {
+			m.getClusterEndpointInfoKey(policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Ports: sorted})
+		}),
+		allocs(func() {
+			m.getClusterEndpointInfoKey(policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Ports: unsorted})
+		}))
+}
