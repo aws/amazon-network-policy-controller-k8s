@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -492,8 +493,10 @@ func (m *policyEndpointsManager) getListOfEndpointInfoFromHash(hashes []string, 
 	return ruleList
 }
 
-// TODO: this can return different hash for semantically same endpointinfo as port slice order can generate separate hash.
-// Check how its tied in bin packing algo and fix if needed
+// getEndpointInfoKey is the identity a reconcile matches stored rules against desired ones by. A
+// stored rule whose key is not desired is purged and its replacement packed anew, possibly into
+// another object, so the key must not change for the same rule: ports are hashed in canonical
+// order. Excepts are hashed as given, since they come from the policy spec in a stable order.
 func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo) string {
 	hasher := sha256.New()
 	// Each "field=value|" record is assembled in a small scratch buffer and
@@ -519,12 +522,23 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 		}
 	}
 
-	for _, port := range info.Ports {
+	for _, port := range canonicalPortOrder(info.Ports) {
 		write("proto=", protocolKeyPart(port.Protocol))
 		write("port=", int32PtrKeyPart(port.Port))
 		write("endPort=", int32PtrKeyPart(port.EndPort))
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// canonicalPortOrder returns ports sorted by policyequality.ComparePorts without reordering the
+// caller's slice, which a resolver may share across many rules. A sorted list is returned as is.
+func canonicalPortOrder(ports []policyinfo.Port) []policyinfo.Port {
+	if slices.IsSortedFunc(ports, policyequality.ComparePorts) {
+		return ports
+	}
+	sorted := slices.Clone(ports)
+	slices.SortFunc(sorted, policyequality.ComparePorts)
+	return sorted
 }
 
 // protocolKeyPart renders a protocol pointer for hashing, using "nil" for an

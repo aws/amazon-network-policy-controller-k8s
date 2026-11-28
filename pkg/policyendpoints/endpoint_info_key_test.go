@@ -12,8 +12,9 @@ import (
 )
 
 // fmtEndpointInfoKey is the previous fmt-based implementation of
-// getEndpointInfoKey. It is kept as a reference: the streaming implementation
-// must produce exactly the same digest for every input.
+// getEndpointInfoKey, with ports in canonical order. It is kept as a reference:
+// the streaming implementation must produce exactly the same digest for every
+// input.
 func fmtEndpointInfoKey(info policyinfo.EndpointInfo) string {
 	hasher := sha256.New()
 	if info.DomainName != "" {
@@ -24,7 +25,7 @@ func fmtEndpointInfoKey(info policyinfo.EndpointInfo) string {
 			fmt.Fprintf(hasher, "except=%s|", except)
 		}
 	}
-	for _, port := range info.Ports {
+	for _, port := range canonicalPortOrder(info.Ports) {
 		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
 			protocolKeyPart(port.Protocol), int32PtrKeyPart(port.Port), int32PtrKeyPart(port.EndPort))
 	}

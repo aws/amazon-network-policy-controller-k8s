@@ -193,3 +193,22 @@ func TestPortSetKey(t *testing.T) {
 	assert.Equal(t, "none", portSetKey(nil))
 	assert.NotEqual(t, "none", portSetKey([]policyinfo.Port{tcp(8080)}))
 }
+
+// dedupPorts feeds the Ports of every ingress entry for a named-port rule, so its order is part
+// of what the controller stores. It must not depend on map iteration.
+func TestDedupPorts_SortedAndStable(t *testing.T) {
+	port := func(proto corev1.Protocol, n int32) policyinfo.Port {
+		return policyinfo.Port{Protocol: &proto, Port: &n}
+	}
+	want := []policyinfo.Port{
+		port(corev1.ProtocolTCP, 80), port(corev1.ProtocolTCP, 443),
+		port(corev1.ProtocolTCP, 8080), port(corev1.ProtocolUDP, 53),
+	}
+	for range 20 {
+		got := dedupPorts([]policyinfo.Port{
+			port(corev1.ProtocolUDP, 53), port(corev1.ProtocolTCP, 8080), port(corev1.ProtocolTCP, 80),
+			port(corev1.ProtocolTCP, 443), port(corev1.ProtocolTCP, 80),
+		})
+		require.Equal(t, want, got)
+	}
+}

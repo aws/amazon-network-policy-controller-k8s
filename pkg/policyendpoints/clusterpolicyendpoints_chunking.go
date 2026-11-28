@@ -287,7 +287,7 @@ func (m *policyEndpointsManager) getClusterEndpointInfoFromHashes(hashes []strin
 func (m *policyEndpointsManager) getClusterEndpointInfoKey(info policyinfo.ClusterEndpointInfo) string {
 	hasher := sha256.New()
 	fmt.Fprintf(hasher, "cidr=%s|domainName=%s|action=%s|", info.CIDR, info.DomainName, info.Action)
-	for _, port := range info.Ports {
+	for _, port := range canonicalPortOrder(info.Ports) {
 		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
 			protocolKeyPart(port.Protocol),
 			int32PtrKeyPart(port.Port),
