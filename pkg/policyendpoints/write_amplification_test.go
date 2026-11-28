@@ -156,7 +156,8 @@ func seedPE(s *writeCounter[policyinfo.PolicyEndpoint], m *policyEndpointsManage
 }
 
 // peerSet maps each peer to the ports it is allowed on, the way the node agent unions a policy's
-// entries across all of its objects.
+// entries across all of its objects. A peer allowed on every port maps to ["all"], so a stored
+// entry narrowed to specific ports does not compare equal to it.
 func peerSet[E policyinfo.EndpointInfo | policyinfo.ClusterEndpointInfo](entries []E) map[string][]string {
 	out := map[string]map[string]bool{}
 	for _, e := range entries {
@@ -170,6 +171,11 @@ func peerSet[E policyinfo.EndpointInfo | policyinfo.ClusterEndpointInfo](entries
 		}
 		if out[peer] == nil {
 			out[peer] = map[string]bool{}
+		}
+		// No ports means every port, which covers any specific ones.
+		if len(ports) == 0 || out[peer]["all"] {
+			out[peer] = map[string]bool{"all": true}
+			continue
 		}
 		for _, p := range ports {
 			out[peer][fmt.Sprintf("%s/%s/%s", protocolKeyPart(p.Protocol), int32PtrKeyPart(p.Port), int32PtrKeyPart(p.EndPort))] = true
