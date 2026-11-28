@@ -25,7 +25,7 @@ func fmtEndpointInfoKey(info policyinfo.EndpointInfo) string {
 			fmt.Fprintf(hasher, "except=%s|", except)
 		}
 	}
-	for _, port := range canonicalPortOrder(info.Ports) {
+	for _, port := range canonicalPortOrder(info.Ports, nil) {
 		fmt.Fprintf(hasher, "proto=%s|port=%s|endPort=%s|",
 			protocolKeyPart(port.Protocol), int32PtrKeyPart(port.Port), int32PtrKeyPart(port.EndPort))
 	}

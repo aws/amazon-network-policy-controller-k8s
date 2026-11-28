@@ -159,3 +159,25 @@ func Test_getEndpointInfoKey_portOrderInsensitive(t *testing.T) {
 	cb := policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Action: "Accept", Ports: reversed}
 	assert.Equal(t, m.getClusterEndpointInfoKey(ca), m.getClusterEndpointInfoKey(cb))
 }
+
+// The key runs for every desired and stored entry on every reconcile. Ports listed out of
+// canonical order, like a DNS rule's [UDP 53, TCP 53] or [443, 80], must not cost an allocation
+// per entry for the sort.
+func Test_endpointKeys_unsortedPortsDoNotAllocateMore(t *testing.T) {
+	m := &policyEndpointsManager{}
+	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
+	sorted := []policyinfo.Port{{Protocol: &tcp, Port: i32(53)}, {Protocol: &udp, Port: i32(53)}}
+	unsorted := []policyinfo.Port{{Protocol: &udp, Port: i32(53)}, {Protocol: &tcp, Port: i32(53)}}
+
+	allocs := func(f func()) float64 { return testing.AllocsPerRun(100, f) }
+	assert.Equal(t,
+		allocs(func() { m.getEndpointInfoKey(policyinfo.EndpointInfo{CIDR: "10.0.0.0/24", Ports: sorted}) }),
+		allocs(func() { m.getEndpointInfoKey(policyinfo.EndpointInfo{CIDR: "10.0.0.0/24", Ports: unsorted}) }))
+	assert.Equal(t,
+		allocs(func() {
+			m.getClusterEndpointInfoKey(policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Ports: sorted})
+		}),
+		allocs(func() {
+			m.getClusterEndpointInfoKey(policyinfo.ClusterEndpointInfo{CIDR: "10.0.0.0/24", Ports: unsorted})
+		}))
+}

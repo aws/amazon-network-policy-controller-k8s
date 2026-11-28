@@ -514,7 +514,8 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 		}
 	}
 
-	for _, port := range canonicalPortOrder(info.Ports) {
+	var portScratch [8]policyinfo.Port
+	for _, port := range canonicalPortOrder(info.Ports, portScratch[:]) {
 		write("proto=", protocolKeyPart(port.Protocol))
 		write("port=", int32PtrKeyPart(port.Port))
 		write("endPort=", int32PtrKeyPart(port.EndPort))
@@ -524,11 +525,13 @@ func (m *policyEndpointsManager) getEndpointInfoKey(info policyinfo.EndpointInfo
 
 // canonicalPortOrder returns ports sorted by policyequality.ComparePorts without reordering the
 // caller's slice, which a resolver may share across many rules. A sorted list is returned as is.
-func canonicalPortOrder(ports []policyinfo.Port) []policyinfo.Port {
+// An unsorted one is sorted in scratch, so a caller that passes a stack array does not allocate
+// for lists that fit in it.
+func canonicalPortOrder(ports, scratch []policyinfo.Port) []policyinfo.Port {
 	if slices.IsSortedFunc(ports, policyequality.ComparePorts) {
 		return ports
 	}
-	sorted := slices.Clone(ports)
+	sorted := append(scratch[:0], ports...)
 	slices.SortFunc(sorted, policyequality.ComparePorts)
 	return sorted
 }
