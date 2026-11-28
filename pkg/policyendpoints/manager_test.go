@@ -1331,8 +1331,13 @@ func TestPolicyEndpointsManager_CleanupCNP(t *testing.T) {
 	cpeList := &policyinfo.ClusterPolicyEndpointList{
 		Items: []policyinfo.ClusterPolicyEndpoint{
 			{
-				ObjectMeta: metav1.ObjectMeta{Name: "cluster-test-cnp-abc123"},
-				Spec:       policyinfo.ClusterPolicyEndpointSpec{PolicyRef: policyinfo.ClusterPolicyReference{Name: "test-cnp"}},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "cluster-test-cnp-abc123",
+					OwnerReferences: []metav1.OwnerReference{
+						{Kind: "ClusterNetworkPolicy", Name: "test-cnp", UID: "test-uid"},
+					},
+				},
+				Spec: policyinfo.ClusterPolicyEndpointSpec{PolicyRef: policyinfo.ClusterPolicyReference{Name: "test-cnp"}},
 			},
 		},
 	}

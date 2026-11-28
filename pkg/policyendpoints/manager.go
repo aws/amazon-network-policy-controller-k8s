@@ -115,10 +115,7 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		client.MatchingFields{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
 		return err
 	}
-	existingPolicyEndpoints := make([]policyinfo.PolicyEndpoint, 0, len(policyEndpointList.Items))
-	for _, policyEndpoint := range policyEndpointList.Items {
-		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
-	}
+	existingPolicyEndpoints, stalePolicyEndpoints := partitionByOwner(policyEndpointList.Items, kindNetworkPolicy, policy.UID)
 
 	createList, updateList, deleteList, err := m.computePolicyEndpoints(policy, existingPolicyEndpoints, ingressGroups, sharedIngressRules, egressRules)
 	if err != nil {
@@ -159,9 +156,14 @@ func (m *policyEndpointsManager) Reconcile(ctx context.Context, policy *networki
 		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
 
+	if err := deleteStaleEndpoints(ctx, m.k8sClient, m.logger, stalePolicyEndpoints); err != nil {
+		return err
+	}
+
 	m.logger.Info("NP reconcile phase durations", "policy", policy.Name, "namespace", policy.Namespace,
 		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
-		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList),
+		"deleteStale", len(stalePolicyEndpoints))
 
 	return nil
 }
@@ -170,12 +172,16 @@ func (m *policyEndpointsManager) Cleanup(ctx context.Context, policy *networking
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
 	if err := m.k8sClient.List(ctx, policyEndpointList,
 		client.InNamespace(policy.Namespace),
-		client.MatchingLabels{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
+		client.MatchingFields{IndexKeyPolicyReferenceName: policy.Name}); err != nil {
 		return errors.Wrap(err, "unable to list policyendpoints")
 	}
-	for _, policyEndpoint := range policyEndpointList.Items {
+	ownedPolicyEndpoints, _ := partitionByOwner(policyEndpointList.Items, kindNetworkPolicy, policy.UID)
+	for _, policyEndpoint := range ownedPolicyEndpoints {
 		if err := m.k8sClient.Delete(ctx, &policyEndpoint); err != nil {
-			return errors.Wrap(err, "unable to delete policyendpoint")
+			if client.IgnoreNotFound(err) != nil {
+				return errors.Wrap(err, "unable to delete policyendpoint")
+			}
+			continue
 		}
 		m.logger.Info("Deleted policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
@@ -197,10 +203,7 @@ func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyin
 		client.MatchingFields{IndexKeyPolicyReferenceName: anp.Name}); err != nil {
 		return err
 	}
-	existingPolicyEndpoints := make([]policyinfo.PolicyEndpoint, 0, len(policyEndpointList.Items))
-	for _, policyEndpoint := range policyEndpointList.Items {
-		existingPolicyEndpoints = append(existingPolicyEndpoints, policyEndpoint)
-	}
+	existingPolicyEndpoints, stalePolicyEndpoints := partitionByOwner(policyEndpointList.Items, kindApplicationNetworkPolicy, anp.UID)
 
 	createList, updateList, deleteList, err := m.computeApplicationNetworkPolicyEndpoints(anp, existingPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
 	if err != nil {
@@ -241,9 +244,14 @@ func (m *policyEndpointsManager) ReconcileANP(ctx context.Context, anp *policyin
 		m.logger.Info("Deleted ANP policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
 
+	if err := deleteStaleEndpoints(ctx, m.k8sClient, m.logger, stalePolicyEndpoints); err != nil {
+		return err
+	}
+
 	m.logger.Info("ANP reconcile phase durations", "policy", anp.Name, "namespace", anp.Namespace,
 		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
-		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList),
+		"deleteStale", len(stalePolicyEndpoints))
 
 	return nil
 }
@@ -252,12 +260,16 @@ func (m *policyEndpointsManager) CleanupANP(ctx context.Context, anp *policyinfo
 	policyEndpointList := &policyinfo.PolicyEndpointList{}
 	if err := m.k8sClient.List(ctx, policyEndpointList,
 		client.InNamespace(anp.Namespace),
-		client.MatchingLabels{IndexKeyPolicyReferenceName: anp.Name}); err != nil {
+		client.MatchingFields{IndexKeyPolicyReferenceName: anp.Name}); err != nil {
 		return errors.Wrap(err, "unable to list ANP policyendpoints")
 	}
-	for _, policyEndpoint := range policyEndpointList.Items {
+	ownedPolicyEndpoints, _ := partitionByOwner(policyEndpointList.Items, kindApplicationNetworkPolicy, anp.UID)
+	for _, policyEndpoint := range ownedPolicyEndpoints {
 		if err := m.k8sClient.Delete(ctx, &policyEndpoint); err != nil {
-			return errors.Wrap(err, "unable to delete ANP policyendpoint")
+			if client.IgnoreNotFound(err) != nil {
+				return errors.Wrap(err, "unable to delete ANP policyendpoint")
+			}
+			continue
 		}
 		m.logger.Info("Deleted ANP policy endpoint", "id", k8s.NamespacedName(&policyEndpoint))
 	}
@@ -279,7 +291,7 @@ func (m *policyEndpointsManager) computePolicyEndpoints(policy *networking.Netwo
 		PodSelector: policy.Spec.PodSelector,
 		PolicyTypes: policy.Spec.PolicyTypes,
 		APIVersion:  "networking.k8s.io/v1",
-		Kind:        "NetworkPolicy",
+		Kind:        kindNetworkPolicy,
 	}
 
 	var createPolicyEndpoints, updatePolicyEndpoints, deletePolicyEndpoints []policyinfo.PolicyEndpoint
@@ -782,7 +794,7 @@ func (m *policyEndpointsManager) computeApplicationNetworkPolicyEndpoints(anp *p
 		PodSelector: anp.Spec.PodSelector,
 		PolicyTypes: anp.Spec.PolicyTypes,
 		APIVersion:  "networking.k8s.aws/v1alpha1",
-		Kind:        "ApplicationNetworkPolicy",
+		Kind:        kindApplicationNetworkPolicy,
 	}
 
 	// Reuse existing packing functions - ANP ingress rules are identical to NetworkPolicy
@@ -831,7 +843,7 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 		return err
 	}
 
-	existingClusterPolicyEndpoints := clusterPolicyEndpointList.Items
+	existingClusterPolicyEndpoints, staleClusterPolicyEndpoints := partitionByOwner(clusterPolicyEndpointList.Items, kindClusterNetworkPolicy, cnp.UID)
 
 	createList, updateList, deleteList, err := m.computeClusterPolicyEndpoints(cnp, existingClusterPolicyEndpoints, ingressRules, egressRules, podSelectorEndpoints)
 	if err != nil {
@@ -873,9 +885,14 @@ func (m *policyEndpointsManager) ReconcileCNP(ctx context.Context, cnp *policyin
 		m.logger.Info("Deleted cluster policy endpoint", "name", cpe.Name)
 	}
 
+	if err := deleteStaleEndpoints(ctx, m.k8sClient, m.logger, staleClusterPolicyEndpoints); err != nil {
+		return err
+	}
+
 	m.logger.Info("CNP reconcile phase durations", "policy", cnp.Name,
 		"computeDuration", computeDuration.Seconds(), "crudDuration", time.Since(crudStart).Seconds(),
-		"create", len(createList), "update", len(updateList), "delete", len(deleteList))
+		"create", len(createList), "update", len(updateList), "delete", len(deleteList),
+		"deleteStale", len(staleClusterPolicyEndpoints))
 
 	return nil
 }
@@ -887,9 +904,13 @@ func (m *policyEndpointsManager) CleanupCNP(ctx context.Context, cnp *policyinfo
 		return err
 	}
 
-	for _, cpe := range clusterPolicyEndpointList.Items {
+	ownedClusterPolicyEndpoints, _ := partitionByOwner(clusterPolicyEndpointList.Items, kindClusterNetworkPolicy, cnp.UID)
+	for _, cpe := range ownedClusterPolicyEndpoints {
 		if err := m.k8sClient.Delete(ctx, &cpe); err != nil {
-			return err
+			if client.IgnoreNotFound(err) != nil {
+				return err
+			}
+			continue
 		}
 		m.logger.Info("Cleaned up cluster policy endpoint", "name", cpe.Name)
 	}
